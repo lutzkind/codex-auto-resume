@@ -266,17 +266,23 @@ Additional guards:
 ## Reboot behaviour
 
 `codex-auto-resume-helper.service` is a user unit with
-`WantedBy=default.target` and `Restart=no`. It starts at login/boot, and exits
-immediately when there is no pending recovery. When it finds pending state it
-either keeps waiting or resumes at once if the reset time has already passed.
+`WantedBy=default.target`, `Restart=on-failure` and `StartLimitIntervalSec=0`.
+It starts at login/boot; when it finds pending state it either keeps waiting or
+resumes at once if the reset time has already passed. With nothing to do it
+watches for a short residual window and then exits, so it is not a permanently
+resident process — a hook signal or the next login starts it again.
 
-For the service to run without an open login session, enable lingering:
+For the service to run without an open login session, enable lingering (the
+install script does this):
 
 ```bash
 loginctl enable-linger "$USER"
 ```
 
-`codex-auto-resume doctor` reports whether the unit is installed and running.
+Verified on this host: stopping and starting the unit (what boot does) reloaded
+the persisted state and kept waiting for the same absolute reset time;
+`codex-auto-resume doctor` reports whether the unit is installed, enabled for
+boot and currently running.
 
 ## Cancellation and uninstall
 
