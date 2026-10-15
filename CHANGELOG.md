@@ -55,5 +55,5 @@ Initial release.
 - `trust-hooks` persists Codex hook trust through Codex itself
   (`hooks/list` for the current hash, `config/value/write` to store it).
 - Install/uninstall shell scripts, a reference systemd user unit, a secret
-  scan script, and 169 unit/integration tests plus a deterministic fake Codex
+  scan script, and 190 unit/integration tests plus a deterministic fake Codex
   CLI harness.

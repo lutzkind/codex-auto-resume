@@ -384,14 +384,16 @@ and timestamps rather than prompts or transcripts. See
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t tests -v   # 139 tests, no dependencies
+python3 -m unittest discover -s tests -t tests -v   # 190 tests, no dependencies
 python3 -m compileall src bin/codex-auto-resume
 scripts/check.sh                                    # tests + hygiene checks
 ```
 
 `tests/fake_codex.py` is a deterministic fake Codex CLI that implements the
 app-server methods, `exec resume`, and transcript writing, so the entire
-wait/resume lifecycle is covered without spending real quota.
+wait/resume lifecycle is covered without spending real quota. It runs straight
+from the checkout, so a `noexec` `/tmp` (as the self-hosted CI runners use) does
+not matter.
 
 ## License
 
