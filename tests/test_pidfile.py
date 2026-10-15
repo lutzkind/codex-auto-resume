@@ -89,18 +89,31 @@ class PidStateTests(StateCase):
 
     def test_unrelated_live_process_is_rejected(self) -> None:
         helper.write_pid()
-        with mock.patch.object(paths, "process_cmdline", return_value=UNRELATED_CMDLINE):
+        with mock.patch.object(paths, "process_alive", return_value=True), mock.patch.object(
+            paths, "process_cmdline", return_value=UNRELATED_CMDLINE
+        ):
+            verdict = helper.helper_pid_state()
+            self.assertEqual(verdict["state"], helper.PID_STATE_STALE)
+            self.assertEqual(verdict["reason"], "not_helper_process")
             self.assertFalse(helper.is_helper_running())
             with mock.patch.object(os, "kill") as kill:
-                self.assertFalse(helper.notify_helper(), "must not signal an unrelated process")
-                kill.assert_not_called()
+                self.assertFalse(helper.notify_helper())
+            # The liveness probe itself may use kill(pid, 0) where /proc is
+            # unavailable, so assert on the signal that was never sent.
+            self.assertNotIn(
+                signal.SIGUSR1,
+                [call[0][1] for call in kill.call_args_list],
+                "must not signal an unrelated process",
+            )
 
     def test_dead_pid_is_stale_and_cleaned(self) -> None:
         paths.atomic_write_json(
             paths.helper_pid_file(),
             {"pid": 999_999_999, "pid_start": 1.0, "started_at": 0.0},
         )
-        with mock.patch.object(paths, "process_cmdline", return_value=HELPER_CMDLINE):
+        with mock.patch.object(paths, "process_alive", return_value=False), mock.patch.object(
+            paths, "process_cmdline", return_value=HELPER_CMDLINE
+        ):
             verdict = helper.helper_pid_state()
             self.assertEqual(verdict["state"], helper.PID_STATE_STALE)
             self.assertEqual(verdict["reason"], "dead_process")
@@ -185,9 +198,10 @@ class PidStateTests(StateCase):
             paths.helper_pid_file(),
             {"pid": 999_999_999, "pid_start": 1.0, "started_at": 0.0},
         )
-        with mock.patch.object(os, "kill") as kill:
-            self.assertFalse(helper.notify_helper())
-            kill.assert_not_called()
+        with mock.patch.object(paths, "process_alive", return_value=False):
+            with mock.patch.object(os, "kill") as kill:
+                self.assertFalse(helper.notify_helper())
+                kill.assert_not_called()
 
     def test_remove_own_pid_never_clobbers_another_helper(self) -> None:
         other = os.getpid() + 1
