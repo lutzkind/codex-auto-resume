@@ -4,6 +4,55 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-15
+
+Helper pid-state lifecycle fix.
+
+### Fixed
+
+- `doctor` no longer fails a healthy idle installation. Its last check
+  required a running helper process, but the helper exits by design when there
+  is nothing to resume, so every correctly idle installation reported
+  `[!!] helper running` and `doctor: problems found` while `status` correctly
+  said `helper: not running`. The check is now `helper state`: running is
+  healthy, idle is healthy, and it only fails when an active recovery exists
+  while automatic resume is enabled and no helper is serving it.
+- `status` and `doctor` now share one canonical helper-liveness decision
+  (`helper.helper_pid_state()`), so they can never disagree again. The hooks'
+  wake-up call (`notify_helper`) uses the same decision before signalling.
+- Helper pid ownership is robust against stale and recycled state:
+  - helper startup reconciles a marker left behind by a killed or crashed
+    predecessor before publishing its own;
+  - the marker is validated against the recorded process start time, the
+    kernel boot id (a marker from a previous boot is stale by definition) and
+    the command line, which must be the helper invocation itself — a recycled
+    pid belonging to any other program, including another `codex-auto-resume`
+    subcommand, is rejected and never signalled;
+  - malformed or non-JSON markers are treated as invalid and cleaned;
+  - exit cleanup removes the marker only if it is still the helper's own, and
+    reconciliation re-reads the record before unlinking so a replacement
+    helper's marker is never deleted;
+  - every exit path (idle exit, `SIGTERM`/`SIGINT`, exceptions, service stop)
+    removes the marker, and a `SIGKILL`ed helper's leftovers are reconciled by
+    the next helper start or the next `doctor` run.
+- `status --json` additionally reports `helper_state` (`running`, `idle`,
+  `stale`, `invalid`) and `helper_pid`. The human-readable `status` output is
+  unchanged.
+
+### Changed
+
+- `doctor` prints `doctor: all checks passed` instead of `doctor: ok`.
+- The app-server `clientInfo.version` now follows the package version instead
+  of a hard-coded string.
+
+### Added
+
+- Regression tests for the helper pid lifecycle: healthy idle, stale pid,
+  pid reuse by a live unrelated process and by another subcommand, malformed
+  state, previous-boot markers, start-time mismatch, normal idle exit, signal
+  shutdown, exception cleanup, startup reconciliation, `SIGKILL` recovery, and
+  a genuinely running helper spawned exactly as the service does (217 tests).
+
 ## [0.1.0] - 2026-10-15
 
 Initial release.

@@ -1,6 +1,6 @@
 {
   "name": "codex-auto-resume",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Resume the exact Codex session that hit a usage limit, once the quota reset time has passed.",
   "hooks": "./hooks/hooks.json",
   "skills": "./skills/",

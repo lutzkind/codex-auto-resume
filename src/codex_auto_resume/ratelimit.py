@@ -20,6 +20,8 @@ import subprocess
 import time
 from typing import Any, Optional
 
+from . import __version__
+
 DEFAULT_TIMEOUT = 30.0
 INITIALIZE_REQUEST_ID = 1
 READ_REQUEST_ID = 2
@@ -100,7 +102,7 @@ def query(
                     "clientInfo": {
                         "name": "codex-auto-resume",
                         "title": "codex-auto-resume",
-                        "version": "0.1.0",
+                        "version": __version__,
                     }
                 },
             },

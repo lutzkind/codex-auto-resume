@@ -53,15 +53,20 @@ class ProcessAliveTests(StateCase):
         with mock.patch.object(paths, "process_cmdline", wraps=paths.process_cmdline):
             self.assertIsInstance(paths.process_cmdline(os.getpid()), str)
 
-    def test_looks_like_our_process_tolerates_missing_cmdline(self) -> None:
+    def test_looks_like_helper_tolerates_missing_cmdline(self) -> None:
         from codex_auto_resume import helper
 
         with mock.patch.object(paths, "process_cmdline", return_value=""):
-            self.assertTrue(helper._looks_like_our_process(os.getpid()))
+            self.assertTrue(helper.looks_like_helper_process(os.getpid()))
         with mock.patch.object(paths, "process_cmdline", return_value="nginx: worker"):
-            self.assertFalse(helper._looks_like_our_process(os.getpid()))
+            self.assertFalse(helper.looks_like_helper_process(os.getpid()))
         with mock.patch.object(paths, "process_cmdline", return_value="python3 -m codex_auto_resume helper"):
-            self.assertTrue(helper._looks_like_our_process(os.getpid()))
+            self.assertTrue(helper.looks_like_helper_process(os.getpid()))
+        # Another subcommand of the same tool must not pass for the helper.
+        with mock.patch.object(
+            paths, "process_cmdline", return_value="/root/cli-persistence/bin/codex-auto-resume status"
+        ):
+            self.assertFalse(helper.looks_like_helper_process(os.getpid()))
 
 
 if __name__ == "__main__":

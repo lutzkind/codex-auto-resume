@@ -45,10 +45,13 @@ def _session_attached(session: Optional[dict]) -> Optional[bool]:
 def cmd_status(args: argparse.Namespace) -> int:
     settings = state.load_settings()
     pending = state.iter_pending()
+    pid_state = helper.helper_pid_state()
     payload = {
         "enabled": bool(settings.get("enabled", True)),
         "state_dir": str(paths.state_dir()),
-        "helper_running": _helper_running(),
+        "helper_running": pid_state["state"] == helper.PID_STATE_RUNNING,
+        "helper_state": pid_state["state"],
+        "helper_pid": pid_state["pid"],
         "pending": [],
     }
     for record in pending:
@@ -100,16 +103,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def _helper_running() -> bool:
-    """True when the pid file points at a live helper process."""
-    from . import helper as helper_module
+    """True when the pid marker points at a live helper process.
 
-    record = paths.read_json(paths.helper_pid_file()) or {}
-    pid = record.get("pid")
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    if not paths.process_alive(pid, record.get("pid_start")):
-        return False
-    return helper_module._looks_like_our_process(pid)
+    Thin alias over the canonical liveness logic in ``helper.helper_pid_state``
+    so `status`, `doctor` and the hooks can never disagree.
+    """
+    return helper.is_helper_running()
 
 
 def cmd_enable(args: argparse.Namespace) -> int:
@@ -239,15 +238,47 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             f"enabled={state_report.get('enabled')} active={state_report.get('active')}",
         )
     )
-    checks.append(("helper running", _helper_running(), str(paths.helper_pid_file())))
+    helper_ok, helper_detail = _helper_health()
+    checks.append(("helper state", helper_ok, helper_detail))
 
     ok = True
     for name, passed, detail in checks:
         if not passed:
             ok = False
         print(f"[{'ok' if passed else '!!'}] {name}: {detail}")
-    print("doctor: ok" if ok else "doctor: problems found")
+    print("doctor: all checks passed" if ok else "doctor: problems found")
     return 0 if ok else 1
+
+
+def _helper_health() -> tuple[bool, str]:
+    """Doctor's view of the helper: idle is healthy, orphaned work is not.
+
+    The helper exits by design when there is nothing to resume, so "no helper
+    process" is the normal state of a healthy installation — that is exactly
+    what ``status`` reports as ``helper: not running``. It only becomes a
+    problem when an active recovery exists while automatic resume is enabled
+    and nothing is serving it. Stale pid markers found on the way are removed.
+    """
+    verdict = helper.reconcile_helper_pid()
+    if verdict["state"] == helper.PID_STATE_RUNNING:
+        return True, "healthy (running: pid {}, started {})".format(
+            verdict["pid"], _fmt_time(verdict.get("started_at"))
+        )
+    active = state.active_pending()
+    if active and state.is_enabled():
+        return False, (
+            f"not running with {len(active)} active recovery(ies); "
+            f"start it with: systemctl --user start {UNIT_NAME}"
+        )
+    if verdict["state"] == helper.PID_STATE_IDLE:
+        detail = "no helper process, no active recoveries"
+    else:
+        detail = "removed {} pid marker ({})".format(
+            verdict["state"], verdict["reason"]
+        )
+    if active:
+        detail += f", {len(active)} recovery(ies) paused while disabled"
+    return True, f"healthy (idle: {detail})"
 
 
 def _availability(snapshot):

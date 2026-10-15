@@ -157,14 +157,34 @@ session: 01a13e0c-d592-7401-b638-b8b61003c313
   cwd: /home/you/project
 ```
 
+With nothing to resume, the helper is not meant to be resident:
+
+```
+enabled
+helper: not running
+no pending sessions
+```
+
+That idle state is healthy. The helper is started by the hooks and at boot,
+and it exits again when there is nothing to watch, so `helper: not running`
+with no pending sessions is exactly what a working installation looks like.
+`status --json` reports the same decision as `helper_running`, `helper_state`
+(`running`, `idle`, `stale`, `invalid`) and `helper_pid`.
+
 ## Debugging
 
 ```bash
-codex-auto-resume doctor                 # binary, features, trust, service, quota read
+codex-auto-resume doctor                 # binary, features, trust, service, helper state, quota read
 codex-auto-resume logs --json | tail -50
 systemctl --user status codex-auto-resume-helper.service
 journalctl --user -u codex-auto-resume-helper.service -n 100
 ```
+
+`doctor` ends with `helper state: healthy (running: …)` when the helper is
+alive and `helper state: healthy (idle: …)` when there is nothing to resume.
+It only reports a problem when an active recovery exists while automatic resume
+is enabled and no helper is serving it, and it removes a stale pid marker it
+finds instead of failing on it.
 
 Every state change is logged with ids, timestamps, and statuses. Logs never
 contain prompts, transcripts, tokens, or credentials.
@@ -282,7 +302,16 @@ loginctl enable-linger "$USER"
 Verified on this host: stopping and starting the unit (what boot does) reloaded
 the persisted state and kept waiting for the same absolute reset time;
 `codex-auto-resume doctor` reports whether the unit is installed, enabled for
-boot and currently running.
+boot and whether the helper is running or healthily idle.
+
+The pid marker under the state directory is a wake-up address, never proof of
+liveness. A marker only counts as "helper running" when the pid it records is
+alive, matches the recorded process start time and boot id, and has the helper
+invocation on its command line. Anything else — a dead pid, a recycled pid, a
+marker from before a reboot, or unreadable JSON — is treated as stale, removed,
+and reported as idle. That keeps `status`, `doctor`, the hooks and the helper
+itself in agreement, and it means even a `SIGKILL`ed helper leaves nothing
+misleading behind.
 
 ## Cancellation and uninstall
 
@@ -393,7 +422,7 @@ and timestamps rather than prompts or transcripts. See
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t tests -v   # 190 tests, no dependencies
+python3 -m unittest discover -s tests -t tests -v   # 217 tests, no dependencies
 python3 -m compileall src bin/codex-auto-resume
 scripts/check.sh                                    # tests + hygiene checks
 ```

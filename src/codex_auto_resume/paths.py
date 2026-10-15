@@ -167,6 +167,21 @@ def file_lock(path: Path, blocking: bool = True) -> Iterator[bool]:
         os.close(handle)
 
 
+def boot_id() -> Optional[str]:
+    """Kernel boot id, or ``None`` where the platform does not expose one.
+
+    Recorded alongside the helper pid: process start times are jiffies since
+    boot, so a pid reuse after a reboot could otherwise look like the same
+    process. This is a plain /proc read, not new infrastructure.
+    """
+    try:
+        text = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    text = text.strip()
+    return text or None
+
+
 def process_start_time(pid: int) -> Optional[float]:
     """Return the start time (jiffies since boot) of ``pid`` from /proc.
 

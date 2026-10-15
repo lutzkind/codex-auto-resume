@@ -602,6 +602,169 @@ def _mark_session(session_id: str, completed: bool) -> None:
     state.write_session(session_id, session)
 
 
+# --------------------------------------------------------------------------- #
+# Helper pid state
+#
+# The pid marker is a wake-up address, never proof that a helper is running: a
+# crashed, killed or rebooted helper can leave the file behind, and pids get
+# recycled. Liveness therefore means "the pid in the marker is positively
+# identified as this helper process". `status`, `doctor`, the hooks and the
+# helper itself all answer that question through `helper_pid_state()`.
+# --------------------------------------------------------------------------- #
+
+#: A helper process is alive and identified.
+PID_STATE_RUNNING = "running"
+#: No pid marker at all: the normal state of an idle installation.
+PID_STATE_IDLE = "idle"
+#: A marker exists but does not point at a live helper (dead pid, reused pid,
+#: different boot, mismatched start time).
+PID_STATE_STALE = "stale"
+#: The marker exists but cannot be read as a pid record.
+PID_STATE_INVALID = "invalid"
+
+#: States that may be removed without touching a running helper.
+RECONCILABLE_STATES = (PID_STATE_STALE, PID_STATE_INVALID)
+
+
+def _pid_record(
+    state_name: str,
+    reason: str,
+    *,
+    pid: Optional[int] = None,
+    pid_start: Optional[float] = None,
+    started_at: Optional[float] = None,
+) -> dict:
+    return {
+        "state": state_name,
+        "reason": reason,
+        "pid": pid,
+        "pid_start": pid_start,
+        "started_at": started_at,
+        "path": str(paths.helper_pid_file()),
+    }
+
+
+def looks_like_helper_process(pid: int) -> bool:
+    """True when ``pid`` can be positively identified as this helper.
+
+    Pids are recycled, so a pid file is a claim, not a fact. On Linux the
+    recorded start time is checked first (in :func:`paths.process_alive`); the
+    command line must then contain the helper invocation itself. A recycled pid
+    belonging to any other program — including another ``codex-auto-resume``
+    subcommand — is rejected. Where the platform exposes no command line the
+    check degrades to the recorded start time, as it always has.
+    """
+    text = paths.process_cmdline(pid)
+    if not text:
+        return True
+    tokens = text.split()
+    if not any(
+        "codex_auto_resume" in token or "codex-auto-resume" in token for token in tokens
+    ):
+        return False
+    # The module invocation is `python3 -m codex_auto_resume helper`, the
+    # launcher form is `.../bin/codex-auto-resume helper`; hooks and the other
+    # subcommands must never pass this test.
+    return "helper" in tokens[1:]
+
+
+def helper_pid_state() -> dict:
+    """Canonical helper liveness, shared by status, doctor and the hooks.
+
+    Returns ``{"state", "reason", "pid", "started_at", "path"}`` where state is
+    one of ``running``, ``idle``, ``stale`` or ``invalid``. A marker alone is
+    never reported as running.
+    """
+    path = paths.helper_pid_file()
+    record = paths.read_json(path)
+    if record is None:
+        if path.exists() or path.is_symlink():
+            return _pid_record(PID_STATE_INVALID, "malformed_pid_file")
+        return _pid_record(PID_STATE_IDLE, "no_pid_file")
+
+    pid = record.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return _pid_record(PID_STATE_INVALID, "malformed_pid_record")
+
+    started_at = record.get("started_at")
+    if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
+        started_at = None
+    pid_start = record.get("pid_start")
+    if not isinstance(pid_start, (int, float)) or isinstance(pid_start, bool):
+        pid_start = None
+
+    def verdict(state_name: str, reason: str) -> dict:
+        return _pid_record(
+            state_name,
+            reason,
+            pid=pid,
+            pid_start=pid_start,
+            started_at=started_at,
+        )
+
+    current_boot = paths.boot_id()
+    recorded_boot = record.get("boot_id")
+    if (
+        current_boot
+        and isinstance(recorded_boot, str)
+        and recorded_boot
+        and recorded_boot != current_boot
+    ):
+        # Start times are jiffies since boot, so they cannot be compared across
+        # a reboot; a marker from a previous boot is stale by definition.
+        return verdict(PID_STATE_STALE, "different_boot")
+
+    if not paths.process_alive(pid, pid_start):
+        reason = "dead_process"
+        if paths.process_start_time(pid) is not None:
+            # Alive, but not the process the marker recorded: the pid was
+            # recycled between the write and this check.
+            reason = "pid_start_mismatch"
+        return verdict(PID_STATE_STALE, reason)
+
+    if not looks_like_helper_process(pid):
+        return verdict(PID_STATE_STALE, "not_helper_process")
+
+    return verdict(PID_STATE_RUNNING, "helper_process_alive")
+
+
+def is_helper_running() -> bool:
+    """True only when the pid marker points at a live, identified helper."""
+    return helper_pid_state()["state"] == PID_STATE_RUNNING
+
+
+def _marker_changed(verdict: dict) -> bool:
+    """True when the marker on disk no longer matches the examined record."""
+    record = paths.read_json(paths.helper_pid_file()) or {}
+    if record.get("pid") != verdict.get("pid"):
+        return True
+    return record.get("pid_start") != verdict.get("pid_start")
+
+
+def reconcile_helper_pid() -> dict:
+    """Remove a stale or malformed pid marker and return the current state.
+
+    Only state that could not be identified as a live helper is removed, and
+    the record is re-read before the unlink: if a helper published its own
+    marker in the meantime, that marker is kept. Called by ``doctor`` and by
+    helper startup, which is what makes a killed helper's leftovers self-healing.
+    """
+    verdict = helper_pid_state()
+    if verdict["state"] not in RECONCILABLE_STATES:
+        return verdict
+    if _marker_changed(verdict):
+        # A new helper owns the marker now; report its real state instead.
+        return helper_pid_state()
+    paths.remove_file(paths.helper_pid_file())
+    log.log(
+        "helper_pid_reconciled",
+        state=verdict["state"],
+        reason=verdict["reason"],
+        pid=verdict.get("pid"),
+    )
+    return verdict
+
+
 def write_pid() -> None:
     """Publish the helper pid so hooks can wake it and status can report it."""
     pid = os.getpid()
@@ -612,6 +775,7 @@ def write_pid() -> None:
                 "version": state.SCHEMA_VERSION,
                 "pid": pid,
                 "pid_start": paths.process_start_time(pid),
+                "boot_id": paths.boot_id(),
                 "started_at": time.time(),
                 "cmdline": "codex_auto_resume helper",
             },
@@ -620,31 +784,22 @@ def write_pid() -> None:
         return
 
 
-def _looks_like_our_process(pid: int) -> bool:
-    """True when ``pid`` is plausibly the helper.
-
-    The pid comes from our own ``0600`` state file, so an unavailable command
-    line (no /proc) is accepted; when it is available we require the module name
-    so a recycled PID is never signalled.
-    """
-    text = paths.process_cmdline(pid)
-    if not text:
-        return True
-    return "codex_auto_resume" in text or "codex-auto-resume" in text
+def remove_own_pid() -> None:
+    """Remove the pid marker, but never one that belongs to another helper."""
+    record = paths.read_json(paths.helper_pid_file()) or {}
+    pid = record.get("pid")
+    if pid is not None and pid != os.getpid():
+        return
+    paths.remove_file(paths.helper_pid_file())
 
 
 def notify_helper() -> bool:
     """Wake a running helper so it re-reads state immediately."""
-    record = paths.read_json(paths.helper_pid_file()) or {}
-    pid = record.get("pid")
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    if not paths.process_alive(pid, record.get("pid_start")):
-        return False
-    if not _looks_like_our_process(pid):
+    verdict = helper_pid_state()
+    if verdict["state"] != PID_STATE_RUNNING:
         return False
     try:
-        os.kill(pid, signal.SIGUSR1)
+        os.kill(verdict["pid"], signal.SIGUSR1)
     except OSError:
         return False
     return True
@@ -656,15 +811,18 @@ def main(codex_bin: Optional[str] = None) -> int:
         if not acquired:
             log.log("helper_already_running")
             return 0
+        # The exclusive lock proves no other helper is running, so any marker
+        # left behind by a killed or crashed predecessor is stale by definition.
+        reconcile_helper_pid()
         waiter = Waiter()
-        waiter.install()
         shutdown = Shutdown()
-        shutdown.install()
-        write_pid()
-        log.log("helper_started", pid=os.getpid(), codex_bin=codex_bin)
         iterations = 0
         watch_until = time.time() + WATCH_RESIDUAL_SECONDS
         try:
+            waiter.install()
+            shutdown.install()
+            write_pid()
+            log.log("helper_started", pid=os.getpid(), codex_bin=codex_bin)
             while iterations < MAX_ITERATIONS:
                 iterations += 1
                 if shutdown.requested:
@@ -714,8 +872,10 @@ def main(codex_bin: Optional[str] = None) -> int:
                 if waiter.consume_wake():
                     watch_until = max(watch_until, time.time() + WATCH_RESIDUAL_SECONDS)
         finally:
+            # Runs for a normal idle exit, a handled signal, and every
+            # exception, so no exit path can leave a misleading pid marker.
             waiter.close()
             shutdown.restore()
-            paths.remove_file(paths.helper_pid_file())
+            remove_own_pid()
             log.log("helper_exited", iterations=iterations)
     return 0

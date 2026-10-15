@@ -20,6 +20,8 @@ import subprocess
 import time
 from typing import Any, Optional
 
+from . import __version__
+
 PLUGIN_ID_PREFIX = "codex-auto-resume@"
 INITIALIZE_ID = 1
 HOOKS_LIST_ID = 2
@@ -100,7 +102,7 @@ def _initialize_request() -> dict:
             "clientInfo": {
                 "name": "codex-auto-resume",
                 "title": "codex-auto-resume",
-                "version": "0.1.0",
+                "version": __version__,
             }
         },
     }

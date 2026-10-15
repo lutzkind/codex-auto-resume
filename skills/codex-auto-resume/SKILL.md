@@ -20,7 +20,16 @@ codex-auto-resume logs -n 50 --json
 ```
 
 `status` prints `enabled` or `disabled`, whether the helper is running, and one
-block per pending recovery:
+block per pending recovery. With nothing to resume the helper is deliberately
+not resident, so this is healthy:
+
+```
+enabled
+helper: not running
+no pending sessions
+```
+
+While waiting, it looks like this:
 
 ```
 enabled

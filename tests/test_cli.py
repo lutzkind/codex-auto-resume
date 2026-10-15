@@ -66,6 +66,37 @@ class StatusTests(StateCase):
         self.assertEqual(payload["pending"][0]["session_id"], "sid")
         self.assertEqual(payload["pending"][0]["state"], "waiting_for_quota")
 
+    def test_json_reports_helper_state(self) -> None:
+        _, out, _ = run_cli("status", "--json")
+        payload = json.loads(out)
+        self.assertFalse(payload["helper_running"])
+        self.assertEqual(payload["helper_state"], "idle")
+        self.assertIsNone(payload["helper_pid"])
+
+    def test_json_reports_a_running_helper(self) -> None:
+        from codex_auto_resume import helper
+
+        helper.write_pid()
+        with mock.patch.object(
+            paths, "process_cmdline", return_value="python3 -m codex_auto_resume helper"
+        ):
+            _, out, _ = run_cli("status", "--json")
+        payload = json.loads(out)
+        self.assertTrue(payload["helper_running"])
+        self.assertEqual(payload["helper_state"], "running")
+        self.assertEqual(payload["helper_pid"], os.getpid())
+
+    def test_status_does_not_report_a_recycled_pid_as_the_helper(self) -> None:
+        from codex_auto_resume import helper
+
+        helper.write_pid()
+        with mock.patch.object(
+            paths, "process_cmdline", return_value="/root/cli-persistence/bin/codex-auto-resume status"
+        ):
+            code, out, _ = run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("helper: not running", out)
+
     def test_no_secrets_or_prompts_in_status(self) -> None:
         state.write_pending(pending("sid"))
         _, out, _ = run_cli("status", "--json")
@@ -159,6 +190,42 @@ class LogsTests(StateCase):
 
 
 class DoctorTests(StateCase):
+    def run_doctor(self) -> tuple[int, str]:
+        """Run doctor with the host-specific checks stubbed out."""
+        from contextlib import ExitStack
+
+        from codex_auto_resume import service
+
+        patches = [
+            mock.patch("codex_auto_resume.codexenv.resolve_codex_binary", return_value="/bin/true"),
+            mock.patch(
+                "codex_auto_resume.codexenv.read_config",
+                return_value={
+                    "features": {"plugins": True},
+                    "approval_policy": "never",
+                },
+            ),
+            mock.patch(
+                "codex_auto_resume.trust.plugin_hook_status",
+                return_value=[{"key": "k", "trust_status": "trusted", "trusted": True}],
+            ),
+            mock.patch(
+                "codex_auto_resume.ratelimit.query",
+                return_value={"ordinary_usage_allowed": True, "windows": []},
+            ),
+            mock.patch.object(
+                service,
+                "service_state",
+                return_value={"active": "inactive", "enabled": "enabled", "unit": "unit"},
+            ),
+            mock.patch.object(cli, "_unit_installed", return_value=True),
+        ]
+        with ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            code, out, _ = run_cli("doctor")
+        return code, out
+
     def test_doctor_reports_missing_codex(self) -> None:
         with mock.patch("codex_auto_resume.codexenv.resolve_codex_binary", return_value=None):
             code, out, _ = run_cli("doctor")
@@ -173,6 +240,58 @@ class DoctorTests(StateCase):
             code, out, _ = run_cli("doctor")
         self.assertEqual(code, 1)
         self.assertIn("plugin hooks trusted", out)
+
+    def test_doctor_is_green_when_idle(self) -> None:
+        code, out = self.run_doctor()
+        self.assertEqual(code, 0, out)
+        self.assertIn("[ok] helper state: healthy (idle", out)
+        self.assertIn("doctor: all checks passed", out)
+
+    def test_doctor_reconciles_a_stale_pid_file(self) -> None:
+        paths.atomic_write_json(
+            paths.helper_pid_file(),
+            {"pid": 999_999_999, "pid_start": 1.0, "started_at": 0.0},
+        )
+        code, out = self.run_doctor()
+        self.assertEqual(code, 0, out)
+        self.assertIn("[ok] helper state: healthy (idle: removed stale pid marker", out)
+        self.assertFalse(paths.helper_pid_file().exists())
+
+    def test_doctor_reconciles_a_malformed_pid_file(self) -> None:
+        paths.helper_pid_file().write_text("not a pid record", encoding="utf-8")
+        code, out = self.run_doctor()
+        self.assertEqual(code, 0, out)
+        self.assertIn("removed invalid pid marker", out)
+        self.assertFalse(paths.helper_pid_file().exists())
+
+    def test_doctor_is_green_with_a_running_helper(self) -> None:
+        from codex_auto_resume import helper
+
+        helper.write_pid()
+        with mock.patch.object(
+            paths, "process_cmdline", return_value="python3 -m codex_auto_resume helper"
+        ):
+            code, out = self.run_doctor()
+        self.assertEqual(code, 0, out)
+        self.assertIn("[ok] helper state: healthy (running: pid", out)
+        self.assertIn(str(os.getpid()), out)
+
+    def test_doctor_fails_when_a_recovery_is_orphaned(self) -> None:
+        state.write_pending(pending("sid"))
+        code, out = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertIn("[!!] helper state: not running with 1 active recovery", out)
+        self.assertIn("doctor: problems found", out)
+        self.assertIsNotNone(state.read_pending("sid"), "doctor must not delete pending state")
+
+    def test_doctor_accepts_a_paused_recovery_while_disabled(self) -> None:
+        state.write_pending(pending("sid"))
+        state.set_enabled(False)
+        code, out = self.run_doctor()
+        self.assertEqual(code, 0, out)
+        self.assertIn("helper state: healthy (idle", out)
+        self.assertIn("paused while disabled", out)
+        self.assertIsNotNone(state.read_pending("sid"))
 
 
 class VersionTests(StateCase):
