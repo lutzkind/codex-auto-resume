@@ -49,12 +49,7 @@ jobs:
       - name: Secret scan
         run: scripts/secret-scan.sh
       - name: The implementation never resumes with the most recent session
-        run: |
-          if grep -rIn --exclude-dir=.git --exclude-dir=__pycache__ -e '--last' src bin hooks; then
-            echo "::error::recovery must always be bound to an explicit session id"
-            exit 1
-          fi
-          echo "ok"
+        run: python3 scripts/check-no-last.py
       - name: Trailing whitespace
         run: |
           if grep -rIn --exclude-dir=.git -E ' +$' . ; then

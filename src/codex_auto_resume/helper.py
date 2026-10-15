@@ -613,6 +613,19 @@ def write_pid() -> None:
         return
 
 
+def _looks_like_our_process(pid: int) -> bool:
+    """True when ``pid`` is plausibly the helper.
+
+    The pid comes from our own ``0600`` state file, so an unavailable command
+    line (no /proc) is accepted; when it is available we require the module name
+    so a recycled PID is never signalled.
+    """
+    text = paths.process_cmdline(pid)
+    if not text:
+        return True
+    return "codex_auto_resume" in text or "codex-auto-resume" in text
+
+
 def notify_helper() -> bool:
     """Wake a running helper so it re-reads state immediately."""
     record = paths.read_json(paths.helper_pid_file()) or {}
@@ -621,8 +634,7 @@ def notify_helper() -> bool:
         return False
     if not paths.process_alive(pid, record.get("pid_start")):
         return False
-    text = paths.process_cmdline(pid)
-    if "codex_auto_resume" not in text and "codex-auto-resume" not in text:
+    if not _looks_like_our_process(pid):
         return False
     try:
         os.kill(pid, signal.SIGUSR1)

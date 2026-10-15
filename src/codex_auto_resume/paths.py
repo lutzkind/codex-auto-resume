@@ -168,7 +168,11 @@ def file_lock(path: Path, blocking: bool = True) -> Iterator[bool]:
 
 
 def process_start_time(pid: int) -> Optional[float]:
-    """Return the start time (jiffies since boot) of ``pid`` from /proc."""
+    """Return the start time (jiffies since boot) of ``pid`` from /proc.
+
+    Returns ``None`` on platforms without /proc (macOS, the BSDs), where PID
+    reuse cannot be detected and liveness falls back to a signal probe.
+    """
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             data = handle.read()
@@ -188,20 +192,36 @@ def process_start_time(pid: int) -> Optional[float]:
         return None
 
 
-def process_alive(pid: int, start_time: Optional[float]) -> bool:
-    """Return True when ``pid`` is alive and matches the recorded start time."""
+def process_alive(pid: int, start_time: Optional[float] = None) -> bool:
+    """Return True when ``pid`` is alive.
+
+    On Linux the recorded start time is compared too, so a recycled PID is not
+    mistaken for the original process. Where /proc is unavailable the check
+    degrades to a ``kill(pid, 0)`` existence probe.
+    """
     if pid <= 0:
         return False
-    current = process_start_time(pid)
-    if current is None:
+    if os.path.isdir("/proc"):
+        current = process_start_time(pid)
+        if current is None:
+            return False
+        if start_time is None:
+            return True
+        # /proc reports jiffies; allow a small tolerance for rounding.
+        return abs(current - float(start_time)) <= 1.0
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
         return False
-    if start_time is None:
+    except PermissionError:
         return True
-    # /proc reports jiffies; allow a small tolerance for rounding.
-    return abs(current - float(start_time)) <= 1.0
+    except OSError:
+        return False
+    return True
 
 
 def process_cmdline(pid: int) -> str:
+    """Command line of ``pid``; empty where the platform does not expose it."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as handle:
             return handle.read().replace(b"\0", b" ").decode("utf-8", "replace")

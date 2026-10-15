@@ -18,7 +18,10 @@ class PidFileTests(StateCase):
         record = paths.read_json(paths.helper_pid_file())
         self.assertIsNotNone(record)
         self.assertEqual(record["pid"], os.getpid())
-        self.assertIsInstance(record["pid_start"], float)
+        # /proc is Linux-only; elsewhere the start time is unknown on purpose.
+        self.assertTrue(
+            record["pid_start"] is None or isinstance(record["pid_start"], float)
+        )
         self.assertEqual(record["version"], state.SCHEMA_VERSION)
 
     def test_status_reports_a_running_helper(self) -> None:

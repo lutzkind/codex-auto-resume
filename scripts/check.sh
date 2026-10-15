@@ -30,11 +30,7 @@ note "secret scan"
 scripts/secret-scan.sh || bad "secret scan found something"
 
 note "forbidden patterns"
-if grep -rIn --exclude-dir=.git --exclude-dir=__pycache__ -e '--last' src bin hooks | grep -v 'never' | grep -v 'assertNotIn' ; then
-  bad "the implementation must never use --last"
-else
-  echo "--last is not used by the implementation"
-fi
+python3 scripts/check-no-last.py || bad "the implementation must never resume the most recent session"
 
 if [ "$fail" = "0" ]; then
   printf '\ncheck: OK\n'
