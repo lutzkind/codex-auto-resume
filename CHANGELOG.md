@@ -23,11 +23,13 @@ Initial release.
   mode and host process, and that arm a pending recovery when a session ends on
   a usage-limit interruption.
 - Detection sweep in the helper, because Codex fires no hook for a failed turn
-  and an interactive TUI session lives on the shared app-server daemon (so
-  quitting the client runs no `SessionEnd` either). The sweep inspects Codex's
-  own session data for the usage-limit signature on start, on every hook signal,
-  and on a short interval while a session is open, with a 10-minute residual
-  window so the helper is not permanently resident.
+  and a TUI client detach does not reliably run `SessionEnd` (observed: no
+  `SessionEnd` at all in one case, and ~70 s late in another). The sweep inspects
+  Codex's own session data for the usage-limit signature on start, on every hook
+  signal, and on a short interval while a session is open, with a 10-minute
+  residual window so the helper is not permanently resident. Both paths are
+  idempotent: when a hook and the sweep see the same interruption the existing
+  record is kept, which was observed live.
 - Quota detector driven by Codex's structured
   `error.codex_error_info == "usage_limit_exceeded"` value, with a carefully
   tested message parser as the only fallback. Network errors, auth failures,

@@ -209,8 +209,10 @@ be the only trigger:
 - a turn that ends in an error runs no `Stop` hook (only a turn that completes
   does), so the quota failure itself produces no hook event;
 - an interactive TUI session lives on the shared local app-server daemon, so
-  quitting the client prints `Disconnected from this task` and does **not** run
-  the `SessionEnd` hook.
+  quitting the client does not reliably run the `SessionEnd` hook. Observed on
+  this host: one TUI session produced no `SessionEnd` at all, and another
+  produced it about 70 seconds after the client was gone — after the sweep had
+  already armed the recovery.
 
 The helper therefore also runs a **detection sweep**: a bounded look at Codex's
 own session data for the usage-limit signature. The sweep runs when the helper
