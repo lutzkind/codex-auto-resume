@@ -107,7 +107,7 @@ def _helper_running() -> bool:
     text = paths.process_cmdline(pid)
     if "codex_auto_resume" not in text and "codex-auto-resume" not in text:
         return False
-    return paths.process_alive(pid, None)
+    return paths.process_alive(pid, record.get("pid_start"))
 
 
 def cmd_enable(args: argparse.Namespace) -> int:

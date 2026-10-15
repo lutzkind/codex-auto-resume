@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
 """Validate the Codex plugin packaging in this repository.
 
-Checks the portable Agent Plugins manifest, the Codex overlay, the hook pack and
-the marketplace manifest against what the Codex CLI expects.
+Packaging was chosen from the behaviour of the installed Codex CLI
+(``codex-cli 0.162.1``), not from assumption:
+
+* ``codex_utils_plugins::find_plugin_manifest_path`` looks for a root
+  ``plugin.json`` first and only falls back to ``.codex-plugin/plugin.json``
+  when the root file is absent (or is not an Agent Plugins manifest).
+* ``core-plugins`` only loads plugin-bundled hooks when the effective manifest
+  is the legacy format: ``if manifest_format == PluginManifestFormat::Legacy {
+  load_plugin_hooks(..) } else { (Vec::new(), Vec::new()) }``.
+
+A portable Agent Plugins root ``plugin.json`` therefore wins discovery and
+silently disables the bundled hooks, so it must not be shipped. Verified with
+``hooks/list``: with the root manifest present the plugin reported zero hooks;
+without it all five hooks are discovered with hashes.
+
+This script fails the build if that mistake is reintroduced.
 """
 
 from __future__ import annotations
@@ -12,7 +26,7 @@ import pathlib
 import sys
 
 REQUIRED_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "Interrupt")
-AGENT_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+AGENT_PLUGIN_SCHEMA_PREFIX = "https://agent-plugins.org/schemas/"
 
 
 def load(root: pathlib.Path, relative: str, failures: list[str]) -> dict:
@@ -27,32 +41,37 @@ def load(root: pathlib.Path, relative: str, failures: list[str]) -> dict:
         return {}
 
 
-def check_plugin(root: pathlib.Path, failures: list[str]) -> None:
-    portable = load(root, "plugin.json", failures)
-    if portable.get("$schema") != AGENT_PLUGIN_SCHEMA:
-        failures.append(f"plugin.json must declare the Agent Plugins v1 $schema {AGENT_PLUGIN_SCHEMA}")
-    name = str(portable.get("name") or "")
-    if (
-        not name
-        or name.startswith("-")
-        or name.endswith("-")
-        or "--" in name
-        or ".." in name
-        or not all(ch.islower() or ch.isdigit() or ch in ".-" for ch in name)
-    ):
-        failures.append(f"plugin.json name {name!r} is not a valid Agent Plugins plugin name")
+def check_no_root_manifest(root: pathlib.Path, failures: list[str]) -> None:
+    plugin_json = root / "plugin.json"
+    if not plugin_json.exists():
+        return
+    text = plugin_json.read_text(encoding="utf-8", errors="replace")
+    if AGENT_PLUGIN_SCHEMA_PREFIX in text:
+        failures.append(
+            "a root plugin.json with an Agent Plugins $schema takes precedence over "
+            ".codex-plugin/plugin.json and disables plugin-bundled hooks in Codex 0.162.x; "
+            "remove it or verify hooks/list still reports the hooks"
+        )
+    else:
+        failures.append(
+            "root plugin.json is not a supported manifest; the Codex manifest lives at "
+            ".codex-plugin/plugin.json"
+        )
 
 
-def check_overlay(root: pathlib.Path, failures: list[str]) -> None:
-    overlay = load(root, ".codex-plugin/plugin.json", failures)
-    if overlay.get("hooks") != "./hooks/hooks.json":
-        failures.append("the Codex overlay must declare hooks './hooks/hooks.json'")
-    if overlay.get("skills") != "./skills/":
-        failures.append("the Codex overlay should declare skills './skills/'")
-    interface = overlay.get("interface") or {}
+def check_manifest(root: pathlib.Path, failures: list[str]) -> None:
+    manifest = load(root, ".codex-plugin/plugin.json", failures)
+    name = str(manifest.get("name") or "")
+    if not name:
+        failures.append(".codex-plugin/plugin.json needs a name")
+    if manifest.get("hooks") != "./hooks/hooks.json":
+        failures.append(".codex-plugin/plugin.json must declare hooks './hooks/hooks.json'")
+    if manifest.get("skills") != "./skills/":
+        failures.append(".codex-plugin/plugin.json should declare skills './skills/'")
+    interface = manifest.get("interface") or {}
     for field in ("displayName", "developerName"):
         if not interface.get(field):
-            failures.append(f"the Codex overlay interface needs {field}")
+            failures.append(f".codex-plugin/plugin.json interface needs {field}")
 
 
 def check_hooks(root: pathlib.Path, failures: list[str]) -> None:
@@ -84,15 +103,16 @@ def check_hooks(root: pathlib.Path, failures: list[str]) -> None:
 
 
 def check_marketplace(root: pathlib.Path, failures: list[str]) -> None:
-    for relative in (
+    supported = (
         ".agents/plugins/marketplace.json",
+        ".agents/plugins/api_marketplace.json",
         ".claude-plugin/marketplace.json",
         ".cursor-plugin/marketplace.json",
-    ):
-        if (root / relative).is_file():
-            break
-    else:
-        failures.append("no Codex marketplace manifest found under a supported path")
+    )
+    if not any((root / relative).is_file() for relative in supported):
+        failures.append(
+            "no marketplace manifest found under a supported path: " + ", ".join(supported)
+        )
         return
     manifest = load(root, ".agents/plugins/marketplace.json", failures)
     if not manifest.get("name"):
@@ -109,8 +129,8 @@ def check_marketplace(root: pathlib.Path, failures: list[str]) -> None:
 def main() -> int:
     root = pathlib.Path(__file__).resolve().parent.parent
     failures: list[str] = []
-    check_plugin(root, failures)
-    check_overlay(root, failures)
+    check_no_root_manifest(root, failures)
+    check_manifest(root, failures)
     check_hooks(root, failures)
     check_marketplace(root, failures)
     if failures:

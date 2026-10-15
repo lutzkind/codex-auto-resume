@@ -43,7 +43,15 @@ than against documentation alone. Useful probes:
 codex --version
 codex exec --json "reply with one word"        # transcript + error shapes
 ls "${CODEX_HOME:-$HOME/.codex}/sessions"/**/rollout-*.jsonl
+codex plugin list --marketplace <your-marketplace>
 ```
+
+Plugin-bundled hooks are only discovered for the `.codex-plugin/plugin.json`
+manifest format. The authoritative check is Codex's own `hooks/list` app-server
+method, which `codex-auto-resume doctor` and `codex-auto-resume trust-hooks`
+already use: it reports every discovered handler with its `currentHash` and
+`trustStatus`. Never assume a manifest works because the file looks right;
+confirm that `hooks/list` reports the handlers.
 
 If a Codex release changes a hook payload, an app-server field, or the
 transcript shape, update the parser, add a regression test with the captured

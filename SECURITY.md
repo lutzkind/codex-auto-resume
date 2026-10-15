@@ -41,8 +41,8 @@ It does **not**:
 
 Open a private security advisory on GitHub
 (<https://github.com/lutzkind/codex-auto-resume/security/advisories/new>) or
-email the maintainer listed in `plugin.json`. Please include the version, the
-platform, and a minimal reproduction.
+email the maintainer listed in `.codex-plugin/plugin.json`. Please include the
+version, the platform, and a minimal reproduction.
 
 ## Repository hygiene
 

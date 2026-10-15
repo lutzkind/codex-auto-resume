@@ -377,8 +377,19 @@ def _mark_session(session_id: str, completed: bool) -> None:
 
 
 def write_pid() -> None:
+    """Publish the helper pid so hooks can wake it and status can report it."""
+    pid = os.getpid()
     try:
-        paths.atomic_write_text(paths.helper_pid_file(), f"{os.getpid()}\n")
+        paths.atomic_write_json(
+            paths.helper_pid_file(),
+            {
+                "version": state.SCHEMA_VERSION,
+                "pid": pid,
+                "pid_start": paths.process_start_time(pid),
+                "started_at": time.time(),
+                "cmdline": "codex_auto_resume helper",
+            },
+        )
     except OSError:
         return
 
@@ -388,6 +399,8 @@ def notify_helper() -> bool:
     record = paths.read_json(paths.helper_pid_file()) or {}
     pid = record.get("pid")
     if not isinstance(pid, int) or pid <= 0:
+        return False
+    if not paths.process_alive(pid, record.get("pid_start")):
         return False
     text = paths.process_cmdline(pid)
     if "codex_auto_resume" not in text and "codex-auto-resume" not in text:

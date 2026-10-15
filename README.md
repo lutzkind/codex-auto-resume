@@ -52,12 +52,12 @@ repeat if the quota is exhausted again, stop when the task finishes
 ## Requirements
 
 - **Codex CLI 0.162.x** (verified against `codex-cli 0.162.1`). The plugin uses
-  the Agent Plugins `plugin.json` manifest with a `.codex-plugin/plugin.json`
-  overlay, the `hooks/hooks.json` hook pack, the `SessionStart` / `Stop` /
-  `SessionEnd` / `Interrupt` / `UserPromptSubmit` lifecycle hooks, the
-  `codex app-server` JSON-RPC methods `hooks/list`, `config/value/write`, and
-  `account/rateLimits/read`, and `codex exec resume <SESSION_ID>`. Earlier or
-  later versions may work but are **not** tested.
+  the `.codex-plugin/plugin.json` Codex manifest, the `hooks/hooks.json` hook
+  pack, the `SessionStart` / `Stop` / `SessionEnd` / `Interrupt` /
+  `UserPromptSubmit` lifecycle hooks, the `codex app-server` JSON-RPC methods
+  `hooks/list`, `config/value/write`, and `account/rateLimits/read`, and
+  `codex exec resume <SESSION_ID>`. Earlier or later versions may work but are
+  **not** tested.
 - **Python 3.9+** (standard library only, no third-party packages).
 - **Linux with a user systemd instance** for the out-of-process waiter
   (`systemctl --user`). macOS works for everything except the service: run
@@ -287,13 +287,33 @@ Files installed by the plugin:
 
 | Path | Purpose |
 |---|---|
-| `plugin.json` | Agent Plugins v1 manifest (portable root) |
-| `.codex-plugin/plugin.json` | Codex overlay: declares `hooks` and `skills` |
+| `.codex-plugin/plugin.json` | Codex plugin manifest (`hooks`, `skills`, `interface`) |
 | `hooks/hooks.json` | The five lifecycle hook handlers |
 | `skills/codex-auto-resume/SKILL.md` | Teaches the Codex agent to report status |
 | `bin/codex-auto-resume` | CLI and hook entry point (Python, stdlib only) |
 | `src/codex_auto_resume/*.py` | Implementation |
 | `systemd/` | Reference copy of the user unit |
+
+### Why there is no root `plugin.json`
+
+The portable Agent Plugins root manifest is the long-term format, but on the
+installed CLI (`codex-cli 0.162.1`) it is not yet a working home for bundled
+hooks:
+
+- `codex_utils_plugins::find_plugin_manifest_path` prefers a root
+  `plugin.json` and only falls back to `.codex-plugin/plugin.json` when the
+  root file is absent or is not an Agent Plugins manifest.
+- `core-plugins` loads plugin-bundled hooks only for the legacy manifest
+  format: `if manifest_format == PluginManifestFormat::Legacy {
+  load_plugin_hooks(..) } else { (Vec::new(), Vec::new()) }`.
+
+Shipping a root `plugin.json` therefore makes the plugin report **zero hooks**.
+This was verified against the installed CLI: with the root manifest present,
+`hooks/list` returned an empty list; with only `.codex-plugin/plugin.json`, all
+five handlers are discovered with their `currentHash`. `scripts/check-manifests.py`
+fails the build if a root `plugin.json` is reintroduced, and the same validation
+runs in CI. Moving to the portable manifest is a one-file change once the CLI
+loads hooks for the Agent Plugins format.
 
 ## State files
 

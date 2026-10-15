@@ -10,10 +10,14 @@ Initial release.
 
 ### Added
 
-- Codex plugin packaging: portable Agent Plugins `plugin.json` root manifest
-  with a `.codex-plugin/plugin.json` overlay declaring the bundled hooks and
-  skill, plus a `.agents/plugins/marketplace.json` marketplace entry so the
-  repository can be added as a local or Git marketplace.
+- Codex plugin packaging: `.codex-plugin/plugin.json` manifest (the format the
+  installed CLI loads bundled hooks from) declaring the `hooks/hooks.json` hook
+  pack, the bundled skill and the plugin interface, plus a
+  `.agents/plugins/marketplace.json` marketplace entry so the repository can be
+  added as a local or Git marketplace. A portable Agent Plugins root
+  `plugin.json` is deliberately **not** shipped: on `codex-cli 0.162.1` it takes
+  precedence over `.codex-plugin/plugin.json` and silently disables
+  plugin-bundled hooks (`hooks/list` then reports zero handlers).
 - Lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`,
   `Interrupt`) that register the explicit session UUID, cwd, model, permission
   mode and host process, and that arm a pending recovery when a session ends on
