@@ -22,6 +22,12 @@ Initial release.
   `Interrupt`) that register the explicit session UUID, cwd, model, permission
   mode and host process, and that arm a pending recovery when a session ends on
   a usage-limit interruption.
+- Detection sweep in the helper, because Codex fires no hook for a failed turn
+  and an interactive TUI session lives on the shared app-server daemon (so
+  quitting the client runs no `SessionEnd` either). The sweep inspects Codex's
+  own session data for the usage-limit signature on start, on every hook signal,
+  and on a short interval while a session is open, with a 10-minute residual
+  window so the helper is not permanently resident.
 - Quota detector driven by Codex's structured
   `error.codex_error_info == "usage_limit_exceeded"` value, with a carefully
   tested message parser as the only fallback. Network errors, auth failures,
@@ -33,16 +39,19 @@ Initial release.
   with offset), and finally to bounded exponential backoff.
 - Out-of-process helper that sleeps until the reported reset time and then runs
   `codex exec resume <SESSION-ID> "<continue prompt>"`. It survives SSH logout,
-  service restart and reboot, and resumes immediately when the reset time has
-  already passed.
+  service restart and reboot, resumes immediately when the reset time has
+  already passed, and re-detects a second session that hits its quota while it
+  waits for the first. If a resume hits the limit again, the next wake-up time
+  comes from a fresh `account/rateLimits/read` snapshot rather than from the
+  older message text.
 - Safety semantics: no auto-resume after user interrupt, successful turn,
   normal completion, `disable`, or `cancel`; detached-session gating;
   superseded-recovery detection; no replay of an ambiguous in-flight resume;
-  no `--last` anywhere.
+  24-hour staleness bound; no `--last` anywhere.
 - CLI: `status`, `enable`, `disable`, `cancel`, `logs`, `doctor`,
   `trust-hooks`, `install-service`, `uninstall-service`, `hook`, `helper`.
 - `trust-hooks` persists Codex hook trust through Codex itself
   (`hooks/list` for the current hash, `config/value/write` to store it).
 - Install/uninstall shell scripts, a reference systemd user unit, a secret
-  scan script, and 139 unit/integration tests plus a deterministic fake Codex
+  scan script, and 169 unit/integration tests plus a deterministic fake Codex
   CLI harness.
