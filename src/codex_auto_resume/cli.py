@@ -231,6 +231,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         )
     )
     checks.append(("helper service installed", _unit_installed(), UNIT_NAME))
+    state_report = _service_state()
+    checks.append(
+        (
+            "helper service enabled for boot",
+            state_report.get("enabled") == "enabled",
+            f"enabled={state_report.get('enabled')} active={state_report.get('active')}",
+        )
+    )
     checks.append(("helper running", _helper_running(), str(paths.helper_pid_file())))
 
     ok = True
@@ -259,6 +267,15 @@ def _trusted_plugin_hooks(codex_bin: Optional[str], codex_home) -> list[dict]:
 def _unit_installed() -> bool:
     unit_path = Path.home() / ".config" / "systemd" / "user" / UNIT_NAME
     return unit_path.exists()
+
+
+def _service_state() -> dict:
+    from . import service
+
+    try:
+        return service.service_state()
+    except (OSError, RuntimeError):
+        return {"active": "unavailable", "enabled": "unavailable", "unit": str(service.unit_path())}
 
 
 def cmd_trust_hooks(args: argparse.Namespace) -> int:

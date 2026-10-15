@@ -188,10 +188,6 @@ def write_cancelled(session_id: str, reason: str, interruption_at: Optional[floa
     return record
 
 
-def clear_cancelled(session_id: str) -> None:
-    paths.remove_file(cancelled_path(session_id))
-
-
 def is_cancelled(session_id: str, interruption_at: Optional[float]) -> bool:
     """True when a tombstone covers this interruption.
 

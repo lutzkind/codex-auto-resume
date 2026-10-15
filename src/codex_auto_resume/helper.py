@@ -49,7 +49,6 @@ class Waiter:
         self._read.setblocking(False)
         self._write.setblocking(False)
         self._installed = False
-        self.interrupted = False
         self.woken = False
 
     def install(self) -> None:

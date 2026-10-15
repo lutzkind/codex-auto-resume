@@ -91,13 +91,3 @@ def read_config() -> dict:
 def default_model() -> Optional[str]:
     value = read_config().get("model")
     return value if isinstance(value, str) and value.strip() else None
-
-
-def approval_policy() -> Optional[str]:
-    value = read_config().get("approval_policy")
-    return value if isinstance(value, str) and value.strip() else None
-
-
-def features_enabled() -> dict:
-    features = read_config().get("features")
-    return features if isinstance(features, dict) else {}

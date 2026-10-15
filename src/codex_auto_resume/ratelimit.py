@@ -69,12 +69,8 @@ def query(
     codex_bin: str,
     codex_home: Optional[str] = None,
     timeout: float = DEFAULT_TIMEOUT,
-    raw: bool = False,
 ) -> Optional[dict]:
-    """Return a normalised rate-limit snapshot, or ``None`` on any failure.
-
-    ``raw=True`` returns the unmodified app-server response.
-    """
+    """Return a normalised rate-limit snapshot, or ``None`` on any failure."""
     env = dict(os.environ)
     if codex_home:
         env["CODEX_HOME"] = codex_home
@@ -125,7 +121,7 @@ def query(
         response = _read_response(proc, READ_REQUEST_ID, deadline)
         if response is None:
             return None
-        return response if raw else normalize(response)
+        return normalize(response)
     except (OSError, RateLimitError, ValueError):
         return None
     finally:
