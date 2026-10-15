@@ -8,14 +8,18 @@
 Description=codex-auto-resume helper: wait for the Codex quota reset and resume the exact session
 Documentation=https://github.com/lutzkind/codex-auto-resume
 After=default.target
+# A long wait must never be disabled by start rate limiting.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-Restart=no
+Restart=on-failure
+RestartSec=15
 # Only signal the helper itself; a resume that is already running completes.
 KillMode=process
 TimeoutStartSec=infinity
-ExecStart=/usr/bin/python3 /home/you/.local/bin/codex-auto-resume helper
+ExecStart=/usr/bin/python3 -m codex_auto_resume helper
+Environment=PYTHONPATH=/home/you/codex-auto-resume/src
 Environment=CODEX_AUTO_RESUME_CODEX_BIN=/usr/local/bin/codex
 Environment=PYTHONUNBUFFERED=1
 StandardOutput=append:/home/you/.local/state/codex-auto-resume/logs/helper.log
