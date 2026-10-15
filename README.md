@@ -87,6 +87,9 @@ codex-auto-resume trust-hooks
 # 4. install the user service that does the waiting
 codex-auto-resume install-service
 
+# 4b. let the service run without an open login session (needed for reboot survival)
+loginctl enable-linger "$USER"
+
 # 5. check everything
 codex-auto-resume doctor
 ```
