@@ -254,6 +254,83 @@ class WaitWakeTests(SweepCase):
         self.assertIsNone(result)
         self.assertIsNone(state.read_pending("sid"))
 
+    def test_disabling_while_waiting_stops_the_wait_but_keeps_the_recovery(self) -> None:
+        transcript = self.write_transcript(
+            "sid",
+            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=self.clock.time())],
+        )
+        self.write_scenario(transcript=str(transcript), resume_outcome="completed")
+        reset_at = self.clock.time() + 3600
+        self.arm_pending(reset_at=reset_at, resume_at=reset_at, transcript=str(transcript))
+        waiter = helper.Waiter()
+
+        def disable_then_sleep(deadline, should_stop=None):  # noqa: ANN001
+            state.set_enabled(False)
+            return None
+
+        with mock.patch.object(waiter, "sleep_until", side_effect=disable_then_sleep):
+            result = helper.wait_for_resume(
+                state.read_pending("sid"), waiter, helper.Shutdown()
+            )
+        waiter.close()
+        self.assertIsNone(result, "a disable must cancel the in-flight wait")
+        self.assertLess(self.clock.value, reset_at, "it must not wait until the reset")
+        self.assertIsNotNone(
+            state.read_pending("sid"), "the recovery is kept so enable can continue it"
+        )
+
+    def test_disabled_helper_resumes_nothing_and_keeps_state(self) -> None:
+        transcript = self.write_transcript(
+            "sid",
+            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=self.clock.time())],
+        )
+        self.write_scenario(transcript=str(transcript), resume_outcome="completed")
+        self.arm_pending(
+            reset_at=self.clock.time() - 1,
+            resume_at=self.clock.time() - 1,
+            transcript=str(transcript),
+        )
+        state.set_enabled(False)
+        with mock.patch.object(helper, "MAX_ITERATIONS", 2):
+            self.assertEqual(helper.main(self.fake_bin), 0)
+        self.assertEqual(self.resume_count_value(), 0)
+        self.assertIsNotNone(state.read_pending("sid"))
+
+
+class CliWakeTests(SweepCase):
+    def run_cli(self, func, args) -> None:  # noqa: ANN001
+        import io
+        from contextlib import redirect_stdout
+
+        with redirect_stdout(io.StringIO()):
+            func(args)
+
+    def test_disable_wakes_a_running_helper(self) -> None:
+        from codex_auto_resume import cli
+
+        with mock.patch.object(cli.helper, "notify_helper") as notify:
+            self.run_cli(cli.cmd_disable, mock.Mock())
+        notify.assert_called_once()
+
+    def test_cancel_wakes_a_running_helper(self) -> None:
+        from codex_auto_resume import cli
+
+        self.arm_pending()
+        with mock.patch.object(cli.helper, "notify_helper") as notify:
+            self.run_cli(cli.cmd_cancel, mock.Mock(all=True, session_id=None))
+        notify.assert_called_once()
+
+    def test_enable_starts_or_wakes_the_helper_when_work_is_pending(self) -> None:
+        from codex_auto_resume import cli
+
+        self.arm_pending()
+        with mock.patch.object(cli.helper, "notify_helper") as notify, mock.patch.object(
+            cli.hooks, "_ensure_helper_running"
+        ) as ensure:
+            self.run_cli(cli.cmd_enable, mock.Mock())
+        notify.assert_called_once()
+        ensure.assert_called_once()
+
 
 class MainLoopTests(SweepCase):
     def test_exits_when_there_is_nothing_to_watch(self) -> None:

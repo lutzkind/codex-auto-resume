@@ -348,6 +348,11 @@ def wait_for_resume(pending: dict, waiter: Waiter, shutdown: Shutdown) -> Option
     session_id = pending["session_id"]
     logged_for = None
     while True:
+        if not state.is_enabled():
+            # A disable must stop an in-flight wait without deleting the
+            # recovery, so re-enabling later continues where it left off.
+            log.log("helper_disabled_while_waiting", session_id=session_id)
+            return None
         current = state.read_pending(session_id)
         if current is None or current.get("state") not in state.ACTIVE_STATES:
             return None
@@ -497,6 +502,9 @@ MIN_ATTACHED_RECHECK = 600.0
 
 def _do_resume(codex_bin: str, pending: dict, settings: dict, waiter: Waiter) -> bool:
     session_id = pending["session_id"]
+    if not state.is_enabled():
+        log.log("helper_disabled_before_resume", session_id=session_id)
+        return False
     prompt = str(settings.get("continue_prompt") or state.DEFAULT_SETTINGS["continue_prompt"])
     transcript = pending.get("transcript_path")
 

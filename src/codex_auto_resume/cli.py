@@ -118,6 +118,7 @@ def cmd_enable(args: argparse.Namespace) -> int:
     log.log("cli_enable")
     print("codex-auto-resume: enabled")
     if state.active_pending():
+        helper.notify_helper()
         hooks._ensure_helper_running()
     return 0
 
@@ -126,6 +127,8 @@ def cmd_disable(args: argparse.Namespace) -> int:
     del args
     state.set_enabled(False)
     log.log("cli_disable")
+    # Wake a waiting helper so it stops immediately instead of at the reset.
+    helper.notify_helper()
     print("codex-auto-resume: disabled (pending state is kept, nothing will resume)")
     return 0
 
@@ -151,6 +154,8 @@ def cmd_cancel(args: argparse.Namespace) -> int:
         state.clear_launching(session_id)
         log.log("cli_cancel", session_id=session_id)
         print(f"codex-auto-resume: cancelled automatic resume for {session_id}")
+    # Wake a waiting helper so it drops the cancelled record now.
+    helper.notify_helper()
     return 0
 
 
