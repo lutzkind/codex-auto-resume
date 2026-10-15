@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import unittest
 from unittest import mock
 
@@ -49,23 +50,30 @@ class PidFileTests(StateCase):
     def test_notify_helper_requires_a_matching_process(self) -> None:
         self.assertFalse(helper.notify_helper())
         helper.write_pid()
-        with mock.patch.object(paths, "process_cmdline", return_value="nginx: worker process"):
+        with mock.patch.object(paths, "process_alive", return_value=True), mock.patch.object(
+            paths, "process_cmdline", return_value="nginx: worker process"
+        ):
             with mock.patch.object(os, "kill") as kill:
                 self.assertFalse(helper.notify_helper(), "must not signal an unrelated process")
                 kill.assert_not_called()
 
     def test_notify_helper_signals_the_helper(self) -> None:
         helper.write_pid()
-        with mock.patch.object(paths, "process_cmdline", return_value=HELPER_CMDLINE):
+        with mock.patch.object(paths, "process_alive", return_value=True), mock.patch.object(
+            paths, "process_cmdline", return_value=HELPER_CMDLINE
+        ):
             with mock.patch.object(os, "kill") as kill:
                 self.assertTrue(helper.notify_helper())
                 kill.assert_called_once()
+                self.assertEqual(kill.call_args[0][1], signal.SIGUSR1)
 
-    def test_notify_helper_ignores_a_stale_pid(self) -> None:
+    def test_notify_helper_ignores_a_dead_pid(self) -> None:
         paths.atomic_write_json(
             paths.helper_pid_file(), {"pid": 999_999_999, "pid_start": 1.0, "started_at": 0.0}
         )
-        with mock.patch.object(paths, "process_cmdline", return_value=HELPER_CMDLINE):
+        with mock.patch.object(paths, "process_alive", return_value=False), mock.patch.object(
+            paths, "process_cmdline", return_value=HELPER_CMDLINE
+        ):
             with mock.patch.object(os, "kill") as kill:
                 self.assertFalse(helper.notify_helper())
                 kill.assert_not_called()
