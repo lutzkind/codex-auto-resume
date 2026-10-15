@@ -184,7 +184,9 @@ Two independent, structured signals, in this order:
      `ordinaryUsageAllowed` and, per quota window, `resetsAt` as exact Unix
      seconds. When `ordinaryUsageAllowed` is `false`, the earliest future
      `resetsAt` among exhausted windows (or `rateLimitUpsell.reset_at`) becomes
-     the wake-up time.
+     the wake-up time. This snapshot is also re-read after a resume that hit the
+     limit again, because the backend recomputes the window and the time printed
+     in an older error message can already be stale.
    - If the snapshot is unavailable, the reset time is parsed from the message
      Codex printed: `... or try again at 7:51 AM.` (parsed in the host's local
      timezone, which is the timezone Codex formatted it in), or the fully
@@ -198,6 +200,28 @@ plus an hourly safety wake-up and immediate wake-up when state changes). If the
 reset time has already passed when recovery starts — for example after a
 reboot — the resume is attempted immediately instead of waiting for the next
 day.
+
+### Two detection paths, because Codex fires no hook for a failed turn
+
+The plugin's hooks are the fast path and the session registry, but they cannot
+be the only trigger:
+
+- a turn that ends in an error runs no `Stop` hook (only a turn that completes
+  does), so the quota failure itself produces no hook event;
+- an interactive TUI session lives on the shared local app-server daemon, so
+  quitting the client prints `Disconnected from this task` and does **not** run
+  the `SessionEnd` hook.
+
+The helper therefore also runs a **detection sweep**: a bounded look at Codex's
+own session data for the usage-limit signature. The sweep runs when the helper
+starts (including at boot), on every hook signal, and on a short interval while
+any Codex session is open (20 s) or during a 10-minute residual window after
+the last one closes (60 s). A sweep reads the state directory and the tail of
+recently modified transcripts only, skips sessions that are already armed,
+cancelled or older than 24 hours, and costs a few file reads.
+
+The reset wait itself is still a single sleep until the exact reset timestamp,
+not a poll: the sweep exists only to notice that a quota failure happened.
 
 ## Safety and stop semantics
 
@@ -216,7 +240,9 @@ Additional guards:
 - The helper only resumes a session that is **detached**: Codex reported
   `SessionEnd`, or the process that hosted the session is gone. While you still
   have the session open in a TUI, nothing is resumed behind your back, because
-  two live hosts for one session is worse than waiting. Set
+  two live hosts for one session is worse than waiting. A session found by the
+  detection sweep that never registered a host process counts as detached only
+  once Codex has stopped writing its transcript for 90 seconds. Set
   `resume_when_attached` to `true` in the state `config.json` if you
   deliberately want the other behaviour.
 - If you come back and make progress in the session yourself, the helper sees a
@@ -227,6 +253,10 @@ Additional guards:
 - If the helper restarts in the middle of a resume, it decides from the
   transcript: a turn that finished normally is not replayed; a resume with no
   evidence is marked `failed` rather than fired twice.
+- An interruption older than 24 hours is ignored, so a long-stopped machine
+  does not resume week-old work.
+- Accounts blocked by spent credits, spend caps or admin limits are recorded as
+  `not_resumable` and never auto-resumed.
 
 ## Reboot behaviour
 
@@ -341,6 +371,12 @@ and timestamps rather than prompts or transcripts. See
   as `not_resumable` and never auto-resumed.
 - Exactly-once delivery is not claimed across a crash: the helper decides from
   the transcript and refuses to fire a resume twice.
+- Detection needs the helper to be running. It is started at boot and by every
+  hook, and while nothing is pending it exits after a 10-minute residual window
+  so it is not a permanently resident process. In the unlikely case that you
+  hit the limit and close the client more than 10 minutes before the helper
+  started its last check, the recovery is picked up the next time Codex starts
+  or the helper runs.
 - Only Linux user systemd is wired up out of the box.
 
 ## Development
