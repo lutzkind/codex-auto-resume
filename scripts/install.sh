@@ -56,6 +56,15 @@ log "persisting hook trust"
 log "installing the user service"
 "$CLI" install-service
 
+# Without lingering, the user manager (and so the waiting helper) stops when the
+# last login session ends. Needed for the wait to survive logout and reboot.
+if command -v loginctl >/dev/null 2>&1; then
+  if [ "$(loginctl show-user "$(id -un)" -p Linger 2>/dev/null | cut -d= -f2)" != "yes" ]; then
+    log "enabling lingering so the waiter survives logout and reboot"
+    loginctl enable-linger "$(id -un)" 2>/dev/null || warn "could not enable lingering; run: sudo loginctl enable-linger $(id -un)"
+  fi
+fi
+
 log "doctor"
 "$CLI" doctor || true
 
