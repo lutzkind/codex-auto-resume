@@ -1,13 +1,15 @@
 name: CI
 
 on:
-  push:
-    branches: ["main"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: codex-auto-resume-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -20,7 +22,7 @@ jobs:
         python: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ matrix.python }}
       - name: Show interpreter
@@ -32,10 +34,11 @@ jobs:
 
   packaging:
     name: plugin packaging
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, ci, isolated]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
       - name: Validate plugin, hook and marketplace manifests
@@ -43,7 +46,8 @@ jobs:
 
   hygiene:
     name: secrets and hygiene
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, ci, isolated]
     steps:
       - uses: actions/checkout@v4
       - name: Secret scan
