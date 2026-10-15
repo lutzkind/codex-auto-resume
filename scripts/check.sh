@@ -15,10 +15,8 @@ python3 -W ignore::ResourceWarning -m unittest discover -s tests -t tests || bad
 note "compile"
 python3 -m compileall -q src bin/codex-auto-resume || bad "compileall failed"
 
-note "json manifests"
-for file in plugin.json .codex-plugin/plugin.json .agents/plugins/marketplace.json hooks/hooks.json; do
-  python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$file" || bad "$file is not valid JSON"
-done
+note "manifests"
+python3 scripts/check-manifests.py || bad "plugin packaging is invalid"
 
 note "trailing whitespace"
 if grep -rIn --exclude-dir=.git -E ' +$' . >/dev/null 2>&1; then
