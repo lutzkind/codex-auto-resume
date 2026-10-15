@@ -196,6 +196,15 @@ class RealFakeCodexTests(StateCase):
 
 
 def make_fake_codex(directory: Path) -> str:
+    """Return an executable path for the fake Codex CLI.
+
+    The repository copy is used directly: a checkout is executable by
+    definition (CI runners execute steps from it), while ``/tmp`` can be
+    mounted ``noexec`` — which is exactly how the self-hosted CI containers are
+    configured. The temp-dir wrapper is only a fallback.
+    """
+    if os.access(FAKE_CODEX, os.X_OK):
+        return str(FAKE_CODEX)
     target = directory / "codex"
     target.write_text(
         "#!/bin/sh\nexec {python} {script} \"$@\"\n".format(
