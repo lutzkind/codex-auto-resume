@@ -359,6 +359,72 @@ class DetachTests(SweepCase):
         self.assertTrue(detached)
         self.assertEqual(reason, "resume_when_attached")
 
+    def test_session_on_the_shared_daemon_falls_back_to_transcript_idle(self) -> None:
+        """An interactive TUI's hook parent is the long-lived daemon."""
+        path = self.rollout(
+            "sid",
+            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=self.clock.time())],
+        )
+        pending = state.new_pending(
+            "sid",
+            cwd=None,
+            model=None,
+            permission_mode=None,
+            transcript_path=str(path),
+            message=QUOTA_MESSAGE,
+            reset_at=self.clock.time() + 60,
+            reset_source="transcript_message",
+            interruption_at=self.clock.time(),
+            now=self.clock.time(),
+        )
+        session = {"attached": True, "host_pid": 1, "host_pid_start": 1.0}
+        settings = {"resume_when_attached": False}
+        with mock.patch.object(helper.paths, "process_alive", return_value=True), mock.patch.object(
+            helper, "is_shared_daemon", return_value=True
+        ):
+            detached, reason = helper.session_detached(pending, session, settings, self.clock.time())
+            self.assertFalse(detached)
+            self.assertEqual(reason, "daemon_hosted_transcript_active")
+            detached, reason = helper.session_detached(
+                pending, session, settings, self.clock.time() + helper.TRANSCRIPT_IDLE_SECONDS + 1
+            )
+            self.assertTrue(detached)
+            self.assertEqual(reason, "daemon_hosted_transcript_idle")
+
+    def test_real_client_host_is_attached_while_its_process_lives(self) -> None:
+        path = self.rollout("sid", [task_complete(at=self.clock.time())])
+        pending = state.new_pending(
+            "sid",
+            cwd=None,
+            model=None,
+            permission_mode=None,
+            transcript_path=str(path),
+            message=None,
+            reset_at=None,
+            reset_source="unknown",
+            interruption_at=self.clock.time(),
+            now=self.clock.time(),
+        )
+        session = {"attached": True, "host_pid": 1, "host_pid_start": 1.0}
+        with mock.patch.object(helper.paths, "process_alive", return_value=True), mock.patch.object(
+            helper, "is_shared_daemon", return_value=False
+        ):
+            detached, reason = helper.session_detached(pending, session, {}, self.clock.time())
+        self.assertFalse(detached)
+        self.assertEqual(reason, "session_attached")
+
+    def test_daemon_cmdline_detection(self) -> None:
+        with mock.patch.object(
+            helper.paths,
+            "process_cmdline",
+            return_value="/root/.codex/packages/app-server-daemon/releases/0.162.1/bin/codex app-server --listen unix:// --managed-daemon",
+        ):
+            self.assertTrue(helper.is_shared_daemon(2867170))
+        with mock.patch.object(
+            helper.paths, "process_cmdline", return_value="/usr/local/bin/node /root/cli-persistence/bin/codex"
+        ):
+            self.assertFalse(helper.is_shared_daemon(1234))
+
 
 class RequotaTests(SweepCase):
     def test_app_server_reset_is_preferred_over_a_stale_message(self) -> None:

@@ -35,7 +35,10 @@ MAX_SWEEP_TRANSCRIPTS = 400
 #: user has almost certainly moved on.
 MAX_INTERRUPTION_AGE_SECONDS = 24 * 3600
 #: A transcript written to this recently means Codex may still be running it.
-TRANSCRIPT_IDLE_SECONDS = 90.0
+TRANSCRIPT_IDLE_SECONDS = 300.0
+#: Command-line markers of the shared local app-server daemon, which outlives
+#: every client and therefore says nothing about whether a session is attached.
+DAEMON_CMDLINE_MARKERS = ("app-server --listen", "--managed-daemon")
 
 
 class Waiter:
@@ -137,12 +140,35 @@ class Shutdown:
                 continue
 
 
+def is_shared_daemon(pid: int) -> bool:
+    """True when ``pid`` is the shared app-server daemon, not a session host.
+
+    An interactive TUI runs its thread on the shared local app-server daemon,
+    so the hook payload's parent process is the daemon. It stays alive after the
+    user quits the client, so it can never be used as an "is this session still
+    attached" signal.
+    """
+    cmdline = paths.process_cmdline(pid)
+    return any(marker in cmdline for marker in DAEMON_CMDLINE_MARKERS)
+
+
+def transcript_is_idle(pending: dict, now: float) -> bool:
+    transcript = pending.get("transcript_path")
+    if not transcript:
+        return True
+    try:
+        mtime = os.path.getmtime(transcript)
+    except OSError:
+        return True
+    return now - mtime >= TRANSCRIPT_IDLE_SECONDS
+
+
 def session_detached(pending: dict, session: Optional[dict], settings: dict, now: float) -> tuple[bool, str]:
     """Decide whether it is safe to resume, i.e. nobody is attached.
 
     Resuming while the user still has the session open in a TUI would create
     two live hosts for the same session, so it is only done when the session
-    ended or its host process is gone.
+    ended, its host process is gone, or the session has gone quiet.
     """
     if settings.get("resume_when_attached"):
         return True, "resume_when_attached"
@@ -150,23 +176,23 @@ def session_detached(pending: dict, session: Optional[dict], settings: dict, now
         # The sweep can find a session that never registered through a hook
         # (for example because hooks were not trusted yet). Without a host
         # process, fall back to whether Codex is still writing the transcript.
-        transcript = pending.get("transcript_path")
-        if transcript:
-            try:
-                mtime = os.path.getmtime(transcript)
-            except OSError:
-                mtime = None
-            if mtime is not None and now - mtime < TRANSCRIPT_IDLE_SECONDS:
-                return False, "transcript_active"
-        return True, "no_session_registry_entry"
+        if transcript_is_idle(pending, now):
+            return True, "no_session_registry_entry"
+        return False, "transcript_active"
     if session.get("attached") is False:
         return True, "session_end_observed"
     pid = session.get("host_pid")
     if isinstance(pid, int) and pid > 0:
         if not paths.process_alive(pid, session.get("host_pid_start")):
             return True, "host_process_gone"
+        if is_shared_daemon(pid):
+            if transcript_is_idle(pending, now):
+                return True, "daemon_hosted_transcript_idle"
+            return False, "daemon_hosted_transcript_active"
         return False, "session_attached"
-    return True, "no_host_process_recorded"
+    if transcript_is_idle(pending, now):
+        return True, "no_host_process_recorded"
+    return False, "transcript_active"
 
 
 def record_is_cancelled(pending: dict) -> bool:
