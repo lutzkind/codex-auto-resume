@@ -1,0 +1,25 @@
+# Reference copy only
+#
+# `codex-auto-resume install-service` generates the real unit at
+# ~/.config/systemd/user/codex-auto-resume-helper.service with the absolute
+# paths of your interpreter, CLI and Codex binary baked in. This file documents
+# the shape of that unit; it is not installed verbatim.
+[Unit]
+Description=codex-auto-resume helper: wait for the Codex quota reset and resume the exact session
+Documentation=https://github.com/lutzkind/codex-auto-resume
+After=default.target
+
+[Service]
+Type=simple
+Restart=no
+# Only signal the helper itself; a resume that is already running completes.
+KillMode=process
+TimeoutStartSec=infinity
+ExecStart=/usr/bin/python3 /home/you/.local/bin/codex-auto-resume helper
+Environment=CODEX_AUTO_RESUME_CODEX_BIN=/usr/local/bin/codex
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:/home/you/.local/state/codex-auto-resume/logs/helper.log
+StandardError=append:/home/you/.local/state/codex-auto-resume/logs/helper.log
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""codex-auto-resume launcher.
+
+Works both from a git checkout (``bin/codex-auto-resume``) and from a Codex
+plugin bundle (``${PLUGIN_ROOT}/bin/codex-auto-resume``) without needing the
+package to be installed.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+_SRC = os.path.join(_ROOT, "src")
+if os.path.isdir(_SRC) and _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
+from codex_auto_resume.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,27 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Test and coverage artefacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local state that must never be committed
+.state/
+*.log

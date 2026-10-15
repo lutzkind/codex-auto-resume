@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-auto-resume",
+  "version": "0.1.0",
+  "description": "Automatically resumes the exact Codex session that a ChatGPT/Codex usage-limit interruption stopped, once the legitimate quota reset time has passed.",
+  "author": {
+    "name": "Lutz Kind",
+    "url": "https://github.com/lutzkind"
+  },
+  "homepage": "https://github.com/lutzkind/codex-auto-resume",
+  "repository": "https://github.com/lutzkind/codex-auto-resume",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "codex-plugin",
+    "usage-limit",
+    "rate-limit",
+    "resume",
+    "quota",
+    "automation"
+  ]
+}

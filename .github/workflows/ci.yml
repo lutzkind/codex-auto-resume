@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }} / python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Show interpreter
+        run: python3 -VV
+      - name: Unit and integration tests
+        run: python3 -W ignore::ResourceWarning -m unittest discover -s tests -t tests -v
+      - name: Compile check
+        run: python3 -m compileall -q src bin/codex-auto-resume
+
+  manifests:
+    name: plugin packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Manifests are valid JSON with the required fields
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+
+          root = pathlib.Path(".")
+          failures = []
+
+          portable = json.loads((root / "plugin.json").read_text())
+          if portable.get("$schema") != "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json":
+              failures.append("plugin.json must declare the Agent Plugins v1 $schema")
+          name = portable.get("name", "")
+          if not name or name.startswith("-") or name.endswith("-") or "--" in name or ".." in name:
+              failures.append(f"plugin.json name {name!r} is not a valid Agent Plugins name")
+
+          overlay = json.loads((root / ".codex-plugin/plugin.json").read_text())
+          if overlay.get("hooks") != "./hooks/hooks.json":
+              failures.append("the Codex overlay must declare hooks './hooks/hooks.json'")
+
+          hooks = json.loads((root / "hooks/hooks.json").read_text())
+          for event in ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "Interrupt"):
+              groups = hooks.get("hooks", {}).get(event)
+              if not groups:
+                  failures.append(f"hooks/hooks.json is missing {event}")
+          for event, groups in hooks.get("hooks", {}).items():
+              for group in groups:
+                  for handler in group.get("hooks", []):
+                      if handler.get("type") != "command" or not handler.get("command"):
+                          failures.append(f"{event} has a handler without a command")
+                      if "${PLUGIN_ROOT}" not in handler.get("command", ""):
+                          failures.append(f"{event} handler must use ${{PLUGIN_ROOT}} so it works from any install")
+
+          marketplace = json.loads((root / ".agents/plugins/marketplace.json").read_text())
+          if not marketplace.get("name"):
+              failures.append("marketplace.json needs a name")
+          plugins = marketplace.get("plugins") or []
+          if not any(p.get("name") == "codex-auto-resume" for p in plugins):
+              failures.append("marketplace.json must list the codex-auto-resume plugin")
+
+          if failures:
+              print("\n".join(failures))
+              sys.exit(1)
+          print("plugin packaging: ok")
+          PY
+
+  hygiene:
+    name: secrets and hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secret scan
+        run: scripts/secret-scan.sh
+      - name: No --last in the implementation
+        run: |
+          if grep -rIn --exclude-dir=.git --exclude-dir=__pycache__ -e '--last' src bin hooks; then
+            echo "::error::the implementation must never resume with --last"
+            exit 1
+          fi
+          echo "ok"
+      - name: Trailing whitespace
+        run: |
+          if grep -rIn --exclude-dir=.git -E ' +$' . ; then
+            echo "::error::trailing whitespace"
+            exit 1
+          fi
+          echo "ok"

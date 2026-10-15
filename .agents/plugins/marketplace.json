@@ -1,0 +1,22 @@
+{
+  "name": "codex-auto-resume",
+  "interface": {
+    "displayName": "codex-auto-resume"
+  },
+  "plugins": [
+    {
+      "name": "codex-auto-resume",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity",
+      "displayName": "Codex Auto Resume",
+      "description": "Automatically resume the exact Codex session that hit a usage limit once the quota resets."
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "codex-auto-resume",
+  "version": "0.1.0",
+  "description": "Resume the exact Codex session that hit a usage limit, once the quota reset time has passed.",
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Auto Resume",
+    "shortDescription": "Resume a session after a usage limit resets",
+    "longDescription": "Watches for Codex usage-limit interruptions, records the session id and the reset time Codex reported, and resumes that exact session from a small background helper once the legitimate quota becomes available again. It never rotates accounts, never bypasses limits, and never resumes a session the user cancelled.",
+    "developerName": "Lutz Kind",
+    "category": "Productivity",
+    "capabilities": ["Automation"],
+    "websiteURL": "https://github.com/lutzkind/codex-auto-resume",
+    "privacyPolicyURL": "https://github.com/lutzkind/codex-auto-resume/blob/main/SECURITY.md",
+    "termsOfServiceURL": "https://github.com/lutzkind/codex-auto-resume/blob/main/LICENSE",
+    "defaultPrompt": ["Show the codex-auto-resume status"]
+  }
+}
