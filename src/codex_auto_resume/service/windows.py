@@ -27,6 +27,7 @@ task store on install.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -192,9 +193,34 @@ def _decode(data) -> str:
 
 
 def write_task_xml(codex_bin: Optional[str]) -> Path:
-    """Write the UTF-16 task definition ``schtasks /create /xml`` requires."""
+    """Write the UTF-16 task definition ``schtasks /create /xml`` requires.
+
+    The helper's exact argv is written next to it as JSON so the on-demand
+    start path (which must work even when Task Scheduler refuses to start a
+    per-user task in a non-interactive session) runs precisely the same command
+    the task does.
+    """
     path = task_xml_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    from .. import paths as paths_module
+
+    argv = [
+        sys.executable,
+        _launcher_path(),
+        "helper",
+        "--state-dir",
+        str(paths_module.state_dir()),
+    ]
+    codex_home = os.environ.get(paths_module.ENV_CODEX_HOME)
+    if codex_home:
+        argv += ["--codex-home", codex_home]
+    if codex_bin:
+        argv += ["--codex-bin", codex_bin]
+    invocation = path.with_name("helper-command.json")
+    invocation.write_text(
+        json.dumps({"argv": argv}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
     content = render_task_xml(codex_bin)
     path.write_text(content, encoding="utf-16-le")
     # schtasks wants a byte-order mark for UTF-16 input.
@@ -202,6 +228,26 @@ def write_task_xml(codex_bin: Optional[str]) -> Path:
     if not raw.startswith(b"\xff\xfe"):
         path.write_bytes(b"\xff\xfe" + raw)
     return path
+
+
+def _launcher_path() -> str:
+    from .. import launcher
+
+    return launcher.launcher_path()
+
+
+def task_argv() -> Optional[list[str]]:
+    """The argv recorded by :func:`write_task_xml`, or None."""
+    invocation = task_xml_path().with_name("helper-command.json")
+    record = None
+    try:
+        record = json.loads(invocation.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    argv = record.get("argv") if isinstance(record, dict) else None
+    if isinstance(argv, list) and argv and all(isinstance(item, str) for item in argv):
+        return argv
+    return None
 
 
 class WindowsBackend(ServiceBackend):
@@ -246,12 +292,50 @@ class WindowsBackend(ServiceBackend):
             path.unlink()
 
     def start(self) -> None:
-        """Start the task now; raise with Task Scheduler's own words on failure."""
+        """Start the helper now, and never silently fail to.
+
+        ``schtasks /run`` is the primary path. Task Scheduler can refuse to
+        start a per-user interactive-token task when the caller is not in an
+        interactive logon session (headless CI, SSH-only sessions, some
+        enterprise policies). The helper is a user process, so the fallback is
+        to start the very same command detached — the way Codex starts its own
+        background app-server daemon — which keeps "the helper starts when it is
+        needed" true everywhere, while the scheduled task still provides logon
+        persistence and restart-on-failure.
+        """
         completed = self._schtasks("/run", "/tn", TASK_NAME, check=False, text=False)
-        if completed.returncode != 0:
-            raise ServiceError(
-                f"schtasks /run /tn {TASK_NAME} failed: " + _decode(completed.stdout).strip()
-            )
+        if completed.returncode == 0:
+            return
+        reason = _decode(completed.stdout).strip()
+        if self._spawn_detached():
+            from .. import log
+
+            log.log("helper_start_detached", reason=reason)
+            return
+        raise ServiceError(f"schtasks /run /tn {TASK_NAME} failed: {reason}")
+
+    def _spawn_detached(self) -> bool:
+        argv = task_argv()
+        if not argv:
+            return False
+        base = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+        for flags in (base | group | breakaway, base | group):
+            try:
+                subprocess.Popen(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=flags,
+                    close_fds=True,
+                    cwd=str(Path.home()),
+                )
+                return True
+            except OSError:
+                continue
+        return False
 
     def stop(self) -> None:
         self._schtasks("/end", "/tn", TASK_NAME, check=False, text=False)

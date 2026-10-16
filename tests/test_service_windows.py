@@ -125,6 +125,50 @@ class SchtasksSequenceTests(StateCase):
             windows.WindowsBackend().start()
         self.assertEqual(calls[0][:4], ["schtasks", "/run", "/tn", windows.TASK_NAME])
 
+    def test_task_argv_matches_the_scheduled_action(self) -> None:
+        windows.write_task_xml(r"C:\codex\codex.exe")
+        argv = windows.task_argv()
+        self.assertIsNotNone(argv)
+        self.assertEqual(argv[2:4], ["helper", "--state-dir"])
+        self.assertIn("--codex-bin", argv)
+
+        import xml.etree.ElementTree as ElementTree
+
+        root = ElementTree.parse(str(windows.task_xml_path())).getroot()
+        namespace = f"{{{windows.TASK_NAMESPACE}}}"
+        action = root.find(f".//{namespace}Exec")
+        self.assertIn("helper", action.findtext(f"{namespace}Arguments"))
+
+    def test_start_falls_back_to_a_detached_spawn(self) -> None:
+        """Task Scheduler refusing a per-user start must not stop the helper."""
+        windows.write_task_xml(None)
+
+        def failing_run(argv, **kwargs):
+            return completed(argv, returncode=1, stdout=b"ERROR: the user is not logged on")
+
+        started: list[list[str]] = []
+
+        def fake_popen(argv, **kwargs):
+            started.append(list(argv))
+            self.assertIn("helper", argv)
+            self.assertTrue(kwargs.get("creationflags"))
+            return mock.MagicMock()
+
+        with mock.patch.object(windows, "run_command", side_effect=failing_run):
+            with mock.patch.object(windows.subprocess, "Popen", side_effect=fake_popen):
+                windows.WindowsBackend().start()
+        self.assertEqual(len(started), 1, "the helper must still be started")
+
+    def test_start_reports_the_scheduler_error_when_nothing_can_start(self) -> None:
+        def failing_run(argv, **kwargs):
+            return completed(argv, returncode=1, stdout=b"ERROR: the user is not logged on")
+
+        with mock.patch.object(windows, "run_command", side_effect=failing_run):
+            with mock.patch.object(windows, "task_argv", return_value=None):
+                with self.assertRaises(windows.ServiceError) as caught:
+                    windows.WindowsBackend().start()
+        self.assertIn("not logged on", str(caught.exception))
+
     def test_stop_ends_the_task(self) -> None:
         calls, fake_run = self._record()
         with mock.patch.object(windows, "run_command", side_effect=fake_run):
