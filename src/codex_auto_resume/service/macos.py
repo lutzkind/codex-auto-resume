@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 from xml.sax.saxutils import escape
 
-from .base import ServiceBackend, ServiceError, run_command
+from .base import ServiceBackend, ServiceError, helper_argv, run_command
 
 LABEL = "com.lutzkind.codex-auto-resume.helper"
 PLIST_NAME = f"{LABEL}.plist"
@@ -83,15 +83,9 @@ def render_plist(
     launcher_script = launcher or launcher_module.launcher_path()
     log_path = stdout or str(paths.log_file())
 
-    arguments = [python_path, launcher_script, "helper", "--state-dir"]
-    from .. import paths as paths_module
-
-    arguments.append(str(paths_module.state_dir()))
-    codex_home = os.environ.get(paths_module.ENV_CODEX_HOME)
-    if codex_home:
-        arguments += ["--codex-home", codex_home]
-    if codex_bin:
-        arguments += ["--codex-bin", codex_bin]
+    arguments = helper_argv(codex_bin)
+    arguments[0] = python_path
+    arguments[1] = launcher_script
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',

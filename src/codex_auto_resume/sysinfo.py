@@ -345,6 +345,31 @@ def spawn_command(command: list[str]):
     return list(command)
 
 
+def terminate_tree(process, timeout: float = 15.0) -> None:
+    """Stop a process we started, including the children of a shell shim.
+
+    Windows has no process group that dies with its parent: killing the
+    ``cmd.exe`` wrapper of a ``.cmd`` shim leaves the real Codex process running.
+    ``taskkill /T`` walks the tree, so nothing survives a terminated app-server
+    query or resume. On POSIX this is a plain ``terminate()``.
+    """
+    pid = getattr(process, "pid", None)
+    if is_windows() and pid:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        process.terminate()
+    except OSError:
+        return
+
+
 def host_pid() -> int:
     """The process that hosts the current Codex session.
 

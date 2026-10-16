@@ -64,6 +64,17 @@ class TaskXmlTests(StateCase):
         self.assertIn(r'"C:\Users\Jane Doe\repo\bin\codex-auto-resume"', arguments)
         self.assertIn("helper", arguments)
         self.assertIn('--codex-bin "C:\\Users\\Jane Doe\\bin\\codex.exe"', arguments)
+        # Task Scheduler appends Arguments to Command: the interpreter must not
+        # appear twice, or python exits 2 trying to open "python.exe" as a file.
+        self.assertNotIn("python.exe", arguments)
+
+    def test_arguments_do_not_repeat_the_command(self) -> None:
+        root = ElementTree.fromstring(windows.render_task_xml(None, python=r"C:\Python312\python.exe"))
+        namespace = f"{{{windows.TASK_NAMESPACE}}}"
+        command = root.find(f".//{namespace}Command").text
+        arguments = root.find(f".//{namespace}Arguments").text
+        self.assertNotIn(command, arguments)
+        self.assertTrue(arguments.startswith('"') or arguments.split(" ", 1)[0].endswith("codex-auto-resume"))
 
     def test_non_ascii_paths_survive_the_xml_round_trip(self) -> None:
         xml_text = windows.render_task_xml(r"C:\Users\josé\codex.exe")
@@ -184,17 +195,27 @@ class SchtasksSequenceTests(StateCase):
 
     def test_stop_terminates_a_detached_helper(self) -> None:
         """A helper started without the task must still be stoppable."""
-        from codex_auto_resume import helper
-
+        self.paths.atomic_write_json(
+            self.paths.helper_pid_file(), {"pid": 4242, "pid_start": 100.0}
+        )
         with mock.patch.object(windows, "run_command") as run:
             run.return_value = completed(["schtasks"], returncode=0)
-            with mock.patch.object(
-                helper, "helper_pid_state", return_value={"state": helper.PID_STATE_RUNNING, "pid": 4242}
-            ):
+            with mock.patch.object(self.paths, "process_alive", return_value=True):
                 with mock.patch.object(windows.os, "kill") as kill:
                     windows.WindowsBackend().stop()
         kill.assert_called_once()
         self.assertEqual(kill.call_args[0][0], 4242)
+
+    def test_stop_leaves_an_unrelated_recycled_pid_alone(self) -> None:
+        self.paths.atomic_write_json(
+            self.paths.helper_pid_file(), {"pid": 4242, "pid_start": 100.0}
+        )
+        with mock.patch.object(windows, "run_command") as run:
+            run.return_value = completed(["schtasks"], returncode=0)
+            with mock.patch.object(self.paths, "process_alive", return_value=False):
+                with mock.patch.object(windows.os, "kill") as kill:
+                    windows.WindowsBackend().stop()
+        kill.assert_not_called()
 
     def test_uninstall_deletes_the_task_and_the_definition(self) -> None:
         windows.write_task_xml(None)

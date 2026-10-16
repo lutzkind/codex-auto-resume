@@ -119,10 +119,9 @@ def query(
                     stream.close()
                 except (OSError, ValueError, AttributeError):
                     pass
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            from . import sysinfo
+
+            sysinfo.terminate_tree(proc)
             try:
                 proc.wait(timeout=5)
             except (subprocess.TimeoutExpired, OSError):

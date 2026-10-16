@@ -185,7 +185,7 @@ def run_resume(
     try:
         result["exit_code"] = proc.wait(timeout=60)
     except subprocess.TimeoutExpired:
-        proc.terminate()
+        sysinfo.terminate_tree(proc)
         try:
             result["exit_code"] = proc.wait(timeout=30)
         except subprocess.TimeoutExpired:

@@ -39,6 +39,7 @@ jobs:
   platform-lifecycle:
     name: real lifecycle (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -51,7 +52,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: Platform lifecycle through the real service manager
+        timeout-minutes: 15
         run: python -W ignore::ResourceWarning -m unittest discover -s tests -t tests -p "test_platform_integration.py" -v
+      - name: Windows service state (diagnostic)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          schtasks /query /tn codex-auto-resume-helper /v /fo LIST
+          if ($LASTEXITCODE -ne 0) { Write-Host "no scheduled task (schtasks exit $LASTEXITCODE)" }
+          Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+            Select-Object ProcessId, CommandLine | Format-List
+          exit 0
 
   packaging:
     name: plugin packaging
