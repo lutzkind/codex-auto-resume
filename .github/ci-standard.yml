@@ -11,6 +11,6 @@ heavy_checks:
   enabled: false
 custom_commands:
   setup: 'git diff --check'
-  checks: 'python -m unittest discover -s tests -v'
+  checks: 'python -VV && python -W ignore::ResourceWarning -m unittest discover -s tests -t tests -v && python -m compileall -q src bin/codex-auto-resume && python -W ignore::ResourceWarning -m unittest discover -s tests -t tests -p "test_platform_integration.py" -v && python -m unittest discover -s tests -v'
 exceptions:
   - 'fast-ci-review-required: .github/workflows/ci.yml: heavy-check-path-split-recommended'
