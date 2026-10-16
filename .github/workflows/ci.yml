@@ -58,9 +58,11 @@ jobs:
         if: always() && runner.os == 'Windows'
         shell: pwsh
         run: |
-          schtasks /query /tn codex-auto-resume-helper /v /fo LIST || Write-Host "no scheduled task"
+          schtasks /query /tn codex-auto-resume-helper /v /fo LIST
+          if ($LASTEXITCODE -ne 0) { Write-Host "no scheduled task (schtasks exit $LASTEXITCODE)" }
           Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
             Select-Object ProcessId, CommandLine | Format-List
+          exit 0
 
   packaging:
     name: plugin packaging
