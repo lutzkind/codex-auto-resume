@@ -77,9 +77,15 @@ class TaskXmlTests(StateCase):
         decoded = raw.decode("utf-16-le")
         self.assertIn("<Task", decoded)
 
-    def test_current_user_id_uses_the_interactive_identity(self) -> None:
-        with mock.patch.dict("os.environ", {"USERDOMAIN": "DESKTOP", "USERNAME": "jane"}):
+    def test_current_user_id_comes_from_whoami_first(self) -> None:
+        completed = subprocess.CompletedProcess(["whoami"], 0, "DESKTOP\\jane\n", "")
+        with mock.patch.object(windows.subprocess, "run", return_value=completed):
             self.assertEqual(windows.current_user_id(), r"DESKTOP\jane")
+
+    def test_current_user_id_falls_back_to_the_environment(self) -> None:
+        with mock.patch.object(windows.subprocess, "run", side_effect=OSError("no whoami")):
+            with mock.patch.dict("os.environ", {"USERDOMAIN": "DESKTOP", "USERNAME": "jane"}):
+                self.assertEqual(windows.current_user_id(), r"DESKTOP\jane")
 
 
 class SchtasksSequenceTests(StateCase):

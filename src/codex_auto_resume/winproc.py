@@ -149,12 +149,29 @@ def _close(handle: int) -> None:
         return
 
 
+def _is_running(handle: int) -> bool:
+    """True while the process object has not been signalled (still running).
+
+    Opening a pid succeeds for a terminated process too, as long as some handle
+    keeps the process object alive (a parent that has not reaped it). Waiting on
+    the handle with a zero timeout is the reliable "has it exited?" test, and it
+    is what makes a killed helper immediately stale instead of looking alive.
+    """
+    try:
+        result = _kernel32.WaitForSingleObject(wintypes.HANDLE(handle), 0)
+    except Exception:  # noqa: BLE001
+        return False
+    return int(result) == _WAIT_TIMEOUT
+
+
 def process_start_time(pid: int) -> Optional[float]:
     """Creation time of ``pid`` as Windows FILETIME ticks (absolute, not jiffies)."""
     handle = _open(pid)
     if handle is None:
         return None
     try:
+        if not _is_running(handle):
+            return None
         created = wintypes.FILETIME()
         exited = wintypes.FILETIME()
         kernel = wintypes.FILETIME()
