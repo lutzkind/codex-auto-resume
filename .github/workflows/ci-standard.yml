@@ -35,6 +35,10 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
+          python -VV
+          python -W ignore::ResourceWarning -m unittest discover -s tests -t tests -v
+          python -m compileall -q src bin/codex-auto-resume
+          python -W ignore::ResourceWarning -m unittest discover -s tests -t tests -p "test_platform_integration.py" -v
           python -m unittest discover -s tests -v
       - name: Check agent-friendliness contract
         shell: bash
