@@ -21,6 +21,41 @@ class ServiceError(RuntimeError):
     """Raised when the platform service manager rejects an operation."""
 
 
+def helper_argv(codex_bin: Optional[str]) -> list[str]:
+    """The exact argv a service manager must run for the helper.
+
+    Always the repository/plugin launcher, which adds ``src/`` to ``sys.path``
+    itself, so the service needs no PYTHONPATH environment and the generated
+    command line is the same shape on every platform. The recorded process
+    command line therefore still contains ``codex-auto-resume helper``, which is
+    what the pid identity check requires.
+
+    The state directory (and ``CODEX_HOME`` when it was set explicitly at
+    install time) are passed as arguments rather than inherited from the service
+    manager's environment, which is minimal on launchd and Task Scheduler. The
+    values are exactly the ones the installing user has, so an installation that
+    moved its state directory keeps working.
+    """
+    import os
+    import sys
+
+    from .. import launcher, paths
+
+    command = [
+        sys.executable,
+        launcher.launcher_path(),
+        "helper",
+        "--state-dir",
+        str(paths.state_dir()),
+    ]
+    codex_home = os.environ.get(paths.ENV_CODEX_HOME)
+    if codex_home:
+        command += ["--codex-home", codex_home]
+    if codex_bin:
+        command += ["--codex-bin", codex_bin]
+    return command
+
+
 def run_command(
     argv: list[str],
     *,
@@ -106,39 +141,8 @@ class ServiceBackend:
     # ------------------------------------------------------------------ #
 
     def helper_command(self, codex_bin: Optional[str]) -> list[str]:
-        """The exact command a service manager must run.
-
-        Always the repository/plugin launcher, which adds ``src/`` to
-        ``sys.path`` itself, so the service needs no PYTHONPATH environment and
-        the generated command line is the same shape on every platform. The
-        recorded process command line therefore still contains
-        ``codex-auto-resume helper``, which is what the pid identity check
-        requires.
-
-        The state directory (and ``CODEX_HOME`` when it was set explicitly at
-        install time) are passed as arguments rather than inherited from the
-        service manager's environment, which is minimal on launchd and Task
-        Scheduler. The values are exactly the ones the installing user has, so
-        an installation that moved its state directory keeps working.
-        """
-        import os
-        import sys
-
-        from .. import launcher, paths
-
-        command = [
-            sys.executable,
-            launcher.launcher_path(),
-            "helper",
-            "--state-dir",
-            str(paths.state_dir()),
-        ]
-        codex_home = os.environ.get(paths.ENV_CODEX_HOME)
-        if codex_home:
-            command += ["--codex-home", codex_home]
-        if codex_bin:
-            command += ["--codex-bin", codex_bin]
-        return command
+        """The exact command this platform's service manager must run."""
+        return helper_argv(codex_bin)
 
     @staticmethod
     def package_parent() -> str:

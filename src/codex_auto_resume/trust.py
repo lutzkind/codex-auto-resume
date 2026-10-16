@@ -63,10 +63,9 @@ def _exchange(codex_bin: str, codex_home: str, requests: list[dict], timeout: fl
                 stream.close()
             except (OSError, ValueError, AttributeError):
                 pass
-        try:
-            proc.terminate()
-        except OSError:
-            pass
+        from . import sysinfo
+
+        sysinfo.terminate_tree(proc)
         try:
             proc.wait(timeout=10)
         except (subprocess.TimeoutExpired, OSError):

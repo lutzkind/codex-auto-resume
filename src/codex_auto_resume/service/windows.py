@@ -35,7 +35,7 @@ import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 from typing import Optional
 
-from .base import ServiceBackend, ServiceError, run_command
+from .base import ServiceBackend, ServiceError, helper_argv, run_command
 
 TASK_NAME = "codex-auto-resume-helper"
 TASK_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
@@ -101,23 +101,15 @@ def render_task_xml(
     launcher_script = launcher or launcher_module.launcher_path()
     principal_user = user_id or current_user_id()
 
-    from .. import paths as paths_module
-
-    arguments = [
-        python_path,
-        launcher_script,
-        "helper",
-        "--state-dir",
-        str(paths_module.state_dir()),
-    ]
-    codex_home = os.environ.get(paths_module.ENV_CODEX_HOME)
-    if codex_home:
-        arguments += ["--codex-home", codex_home]
-    if codex_bin:
-        arguments += ["--codex-bin", codex_bin]
-    # Task Scheduler hands `Arguments` to the process verbatim; quote each token
-    # so user paths with spaces (C:\Users\Jane Doe\...) survive.
-    command_line = " ".join(_quote(item) for item in arguments)
+    # One definition of the helper argv (base.helper_argv); the explicit
+    # python/launcher parameters only exist so tests can pin them.
+    arguments = helper_argv(codex_bin)
+    arguments[0] = python_path
+    arguments[1] = launcher_script
+    # Task Scheduler runs `<Command>` with `<Arguments>` appended, so the
+    # executable appears exactly once: python is the command, everything else
+    # is arguments. Quoting each token keeps user paths with spaces intact.
+    command_line = " ".join(_quote(item) for item in arguments[1:])
 
     return "\n".join(
         [
@@ -202,20 +194,8 @@ def write_task_xml(codex_bin: Optional[str]) -> Path:
     """
     path = task_xml_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    from .. import paths as paths_module
 
-    argv = [
-        sys.executable,
-        _launcher_path(),
-        "helper",
-        "--state-dir",
-        str(paths_module.state_dir()),
-    ]
-    codex_home = os.environ.get(paths_module.ENV_CODEX_HOME)
-    if codex_home:
-        argv += ["--codex-home", codex_home]
-    if codex_bin:
-        argv += ["--codex-bin", codex_bin]
+    argv = helper_argv(codex_bin)
     invocation = path.with_name("helper-command.json")
     invocation.write_text(
         json.dumps({"argv": argv}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -228,12 +208,6 @@ def write_task_xml(codex_bin: Optional[str]) -> Path:
     if not raw.startswith(b"\xff\xfe"):
         path.write_bytes(b"\xff\xfe" + raw)
     return path
-
-
-def _launcher_path() -> str:
-    from .. import launcher
-
-    return launcher.launcher_path()
 
 
 def task_argv() -> Optional[list[str]]:
@@ -348,17 +322,32 @@ class WindowsBackend(ServiceBackend):
         return False
 
     def stop(self) -> None:
-        """End the task and terminate a detached helper, if one is identified."""
-        self._schtasks("/end", "/tn", TASK_NAME, check=False, text=False)
-        from .. import helper
+        """End the task and terminate a detached helper, if one is identified.
 
-        verdict = helper.helper_pid_state()
-        if verdict.get("state") != helper.PID_STATE_RUNNING:
+        The marker's pid is used directly: it is checked against the recorded
+        process identity, which is exactly the promise the marker makes, and it
+        also covers a marker whose command line could not be read. On Windows a
+        terminated process cannot clean up after itself, so the leftover marker
+        is reconciled by the next ``status``/``doctor``/helper start.
+        """
+        self._schtasks("/end", "/tn", TASK_NAME, check=False, text=False)
+        from .. import helper, paths
+
+        record = paths.read_json(paths.helper_pid_file()) or {}
+        pid = record.get("pid")
+        pid_start = record.get("pid_start")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            verdict = helper.helper_pid_state()
+            pid = verdict.get("pid")
+            pid_start = verdict.get("pid_start")
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                return
+        if not paths.process_alive(pid, pid_start if isinstance(pid_start, (int, float)) else None):
             return
         import signal
 
         try:
-            os.kill(int(verdict["pid"]), signal.SIGTERM)
+            os.kill(int(pid), signal.SIGTERM)
         except OSError:
             return
 

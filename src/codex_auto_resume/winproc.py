@@ -225,8 +225,10 @@ def process_alive(pid: int, start_time: Optional[float] = None) -> bool:
     if start_time is None:
         return True
     try:
-        # Exact comparison on purpose: the value is a stable FILETIME, not a
-        # rounding-prone jiffy count.
+        # The creation time is a stable FILETIME, not a rounding-prone jiffy
+        # count; it travels through JSON as a number, so the comparison is to
+        # the precision a float64 keeps — orders of magnitude finer than the
+        # millisecond granularity at which Windows creates processes.
         return int(current) == int(float(start_time))
     except (TypeError, ValueError, OverflowError):
         return False
