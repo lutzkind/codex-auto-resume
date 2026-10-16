@@ -99,7 +99,11 @@ Platform-specific facts that matter:
 - **Windows native**: a per-user Task Scheduler task (`InteractiveToken`,
   `LeastPrivilege`) — no administrator rights, nothing machine-wide. It starts
   at logon, on demand from a hook, and restarts after a crash; a wait that
-  spans a logout continues at the next logon. A Windows *service* is
+  spans a logout continues at the next logon. When Task Scheduler refuses to
+  start a per-user task in a non-interactive session (headless CI, SSH-only
+  sessions, some enterprise policies), the exact same helper command is started
+  detached instead — the way Codex starts its own background daemon — so a
+  quota recovery never waits for a desktop logon. A Windows *service* is
   deliberately not used (it would need elevation and run outside the session).
 - **WSL**: the Linux backend runs inside the distribution. If the distribution
   does not run systemd, hooks still record sessions and `doctor` explains the
@@ -390,7 +394,7 @@ restarts after a crash, and never signals an in-flight resume:
 |---|---|---|---|
 | Linux | `codex-auto-resume-helper.service` (`WantedBy=default.target`) | login/boot + `systemctl --user start` | `Restart=on-failure`, `StartLimitIntervalSec=0` |
 | macOS | `~/Library/LaunchAgents/com.lutzkind.codex-auto-resume.helper.plist` | login (`RunAtLoad`) + `launchctl kickstart` | `KeepAlive{SuccessfulExit: false}`, `ThrottleInterval` |
-| Windows | Task Scheduler task `codex-auto-resume-helper` | logon trigger + `schtasks /run` | `RestartOnFailure` (PT1M, 10 attempts) |
+| Windows | Task Scheduler task `codex-auto-resume-helper` | logon trigger + `schtasks /run` (a detached start of the same command when Task Scheduler refuses) | `RestartOnFailure` (PT1M, 10 attempts) |
 
 When the helper finds pending state it either keeps waiting or resumes at once
 if the reset time has already passed. With nothing to do it watches for a short

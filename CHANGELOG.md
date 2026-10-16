@@ -29,7 +29,10 @@ Linux path, and the Linux installation is unchanged in behaviour.
 - **Native Windows support** with a per-user Task Scheduler task created from
   generated XML (`schtasks`): logon trigger, `RestartOnFailure`, no time limit,
   `InteractiveToken` + `LeastPrivilege` (no administrator rights, no service).
-  `scripts/install.ps1` / `scripts/uninstall.ps1` install and remove it.
+  When Task Scheduler refuses to start a per-user task in a non-interactive
+  session (observed on GitHub's Windows runners, which have no desktop logon),
+  the same helper command is started detached instead, so the recovery still
+  runs; `scripts/install.ps1` / `scripts/uninstall.ps1` install and remove it.
 - **Windows hook launcher** `bin/codex-auto-resume.cmd` plus a `commandWindows`
   entry in every `hooks/hooks.json` handler. Codex runs command hooks through
   `cmd.exe` on Windows and picks `commandWindows` there, so hooks work without

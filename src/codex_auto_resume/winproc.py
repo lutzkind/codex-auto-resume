@@ -34,6 +34,10 @@ IS_WINDOWS = sys.platform == "win32"
 
 #: PROCESS_QUERY_LIMITED_INFORMATION (Windows Vista+).
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+#: SYNCHRONIZE: required to wait on the process handle (liveness).
+_PROCESS_SYNCHRONIZE = 0x00100000
+#: GetExitCodeProcess' "the process is still running" value.
+_STILL_ACTIVE = 259
 #: Maximum command line we are willing to read from another process.
 _MAX_COMMAND_LINE = 32768
 #: SystemTimeOfDayInformation.
@@ -100,6 +104,11 @@ def _load() -> bool:
         _kernel32.SetEvent.argtypes = [wintypes.HANDLE]
         _kernel32.WaitForSingleObject.restype = wintypes.DWORD
         _kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        _kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        _kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
         _ntdll.NtQueryInformationProcess.restype = ctypes.c_long
         _ntdll.NtQueryInformationProcess.argtypes = [
             wintypes.HANDLE,
@@ -138,7 +147,9 @@ def _filestime_to_int(value: wintypes.FILETIME) -> int:
 def _open(pid: int) -> Optional[int]:
     if not _load() or pid <= 0:
         return None
-    handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    handle = _kernel32.OpenProcess(
+        _PROCESS_QUERY_LIMITED_INFORMATION | _PROCESS_SYNCHRONIZE, False, pid
+    )
     return int(handle) if handle else None
 
 
@@ -156,12 +167,23 @@ def _is_running(handle: int) -> bool:
     keeps the process object alive (a parent that has not reaped it). Waiting on
     the handle with a zero timeout is the reliable "has it exited?" test, and it
     is what makes a killed helper immediately stale instead of looking alive.
+    The exit-code check is the fallback if waiting on the handle is refused.
     """
     try:
         result = _kernel32.WaitForSingleObject(wintypes.HANDLE(handle), 0)
     except Exception:  # noqa: BLE001
         return False
-    return int(result) == _WAIT_TIMEOUT
+    if int(result) == _WAIT_TIMEOUT:
+        return True
+    if int(result) == _WAIT_OBJECT_0:
+        return False
+    code = wintypes.DWORD(0)
+    try:
+        if _kernel32.GetExitCodeProcess(wintypes.HANDLE(handle), ctypes.byref(code)):
+            return int(code.value) == _STILL_ACTIVE
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def process_start_time(pid: int) -> Optional[float]:

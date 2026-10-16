@@ -98,6 +98,10 @@ class PlatformLifecycleTests(unittest.TestCase):
         available, detail = service.available()
         if not available:
             self.skipTest(f"{service.backend().display} is not usable here: {detail}")
+        print(
+            f"[platform-IT] platform={sysinfo.info().label()} backend={service.backend().name} "
+            f"available={detail}"
+        )
 
         self.tmp = Path(tempfile.mkdtemp(prefix="car-platform-it-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
