@@ -583,7 +583,7 @@ only to tell "the shared daemon" apart from "a session host". See
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t tests -v   # 309 tests, no dependencies
+python3 -m unittest discover -s tests -t tests -v   # 317 tests, no dependencies
 python3 -m compileall src bin/codex-auto-resume
 scripts/check.sh                                    # tests + hygiene checks
 
