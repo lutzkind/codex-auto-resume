@@ -4,6 +4,101 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-16
+
+Cross-platform release: macOS and native Windows join Linux, WSL stays on the
+Linux path, and the Linux installation is unchanged in behaviour.
+
+### Added
+
+- **Platform abstraction.** The portable core (quota detection, exact session
+  UUID tracking, recovery state, reset handling, ordering, retry, cancellation,
+  enable/disable, hook handling) is now clearly separated from one small
+  service-lifecycle adapter per platform in `codex_auto_resume/service/`
+  (`base.py`, `linux.py`, `macos.py`, `windows.py`). `install-service`,
+  `uninstall-service`, `status`, `doctor` and the hooks select the adapter
+  automatically. WSL selects the Linux adapter and never a Windows one.
+- **macOS support** with a native `launchd` LaunchAgent in
+  `~/Library/LaunchAgents` (`launchctl bootstrap`/`bootout`/`kickstart`/`kill`,
+  no deprecated `load`/`unload`): starts at login (`RunAtLoad`), restarts on
+  failure only (`KeepAlive{SuccessfulExit: false}`), never kills an in-flight
+  resume (`AbandonProcessGroup`), logs to the state directory, and needs no
+  root. `scripts/install.sh` now installs it (no lingering equivalent exists;
+  the agent starts again at login and resumes immediately when the reset time
+  has passed).
+- **Native Windows support** with a per-user Task Scheduler task created from
+  generated XML (`schtasks`): logon trigger, `RestartOnFailure`, no time limit,
+  `InteractiveToken` + `LeastPrivilege` (no administrator rights, no service).
+  `scripts/install.ps1` / `scripts/uninstall.ps1` install and remove it.
+- **Windows hook launcher** `bin/codex-auto-resume.cmd` plus a `commandWindows`
+  entry in every `hooks/hooks.json` handler. Codex runs command hooks through
+  `cmd.exe` on Windows and picks `commandWindows` there, so hooks work without
+  a POSIX shell; the launcher finds a Python 3.9+ interpreter itself.
+- **Portable process identity.** Helper liveness keeps its Linux guarantees and
+  gains equivalents elsewhere: macOS compares the recorded `ps` start time
+  (2 s tolerance, `LC_ALL=C`) plus the `sysctl` boot id; Windows compares the
+  exact `GetProcessTimes` creation time and the kernel boot time. Command lines
+  come from `ps` (macOS), `NtQueryInformationProcess` (Windows) and `/proc`
+  (Linux), so a recycled pid is rejected on every platform.
+- **Windows wake channel.** Windows has no `SIGUSR1`, so a running helper waits
+  on a per-installation named event (`Local\codex-auto-resume-helper-<hash>`)
+  and `disable`/`cancel`/hooks signal it with `SetEvent`; where the event cannot
+  be created the sleep slice is bounded so state changes are still noticed
+  within seconds.
+- **Portable state locations.** Linux keeps `${XDG_STATE_HOME:-~/.local/state}`,
+  macOS uses `~/Library/Application Support/codex-auto-resume` (an explicitly
+  set `XDG_STATE_HOME` and an existing legacy `~/.local/state` directory are
+  honoured), Windows uses `%LOCALAPPDATA%\codex-auto-resume`. The installed
+  service records the state directory (and `CODEX_HOME`, when set) explicitly,
+  so no platform's minimal service environment changes which state is used.
+- **Shared daemon detection without command lines.** A session whose host
+  process is Codex's shared app-server daemon is now also recognised through
+  Codex's own `app-server-daemon/daemon.pid` / `app-server.pid` record, which
+  works on every platform, with the previous command-line markers kept as a
+  fallback.
+- Cross-platform tests: platform detection (Linux/macOS/Windows/WSL1/WSL2/
+  unknown), adapter selection, generated systemd unit / launchd plist / Windows
+  task XML (including paths with spaces and non-ASCII characters), reference
+  file drift, per-platform process identity, wake channels, `.cmd` spawn
+  handling, and hook commands executed through `sh` and `cmd.exe`. CI now runs
+  Ubuntu, macOS **and Windows** with Python 3.9 and 3.12, plus a
+  `platform-lifecycle` job per OS that installs, starts, wakes, uses and
+  uninstalls the real service manager.
+- Real-platform integration test
+  (`tests/test_platform_integration.py`): the service manager starts a helper
+  that resumes a pending recovery through the fake Codex CLI, recording the
+  exact `exec resume <SESSION-UUID>` invocation, then cleans the state up.
+
+### Changed
+
+- `hooks/hooks.json` handlers carry `commandWindows` alongside `command`;
+  hook hashes change, so `codex-auto-resume trust-hooks` must be run once after
+  upgrading (the TUI `/hooks` approval works too).
+- The systemd unit's `ExecStart` now passes `--state-dir` (and `--codex-home`
+  when set) explicitly. The unit, its restart semantics, `KillMode=process`,
+  `WantedBy=default.target` and `Restart=on-failure` are otherwise unchanged,
+  and an existing installation keeps its state directory.
+- `status --json` reports `platform` and `service` (backend, installed, active,
+  enabled). The human-readable `status` output is unchanged.
+- `doctor` reports the detected platform and service backend first
+  (`[ok] platform: macOS arm64`, `[ok] service backend: launchd …`) and asks the
+  right backend to start the helper in its failure message. The remaining
+  checks are unchanged.
+- `codexenv.resolve_codex_binary` also looks at the documented Windows install
+  locations (`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`,
+  `~/.codex/packages/standalone/codex(.exe)`).
+- The resume child is spawned with platform-appropriate detachment, and a
+  Codex installed as a `.cmd` shim (npm on Windows) is started through
+  `cmd.exe /d /s /c` with a correctly quoted command line.
+
+### Fixed
+
+- A hook running on Windows would have recorded `cmd.exe` as the session host,
+  which exits immediately and would have made every session look detached. The
+  recorded host is now the first non-shell ancestor (verified by test).
+- `tests/fake_codex.py` no longer depends on the glibc `%-I` extension, so the
+  test harness runs on Windows and macOS.
+
 ## [0.1.1] - 2026-10-15
 
 Helper pid-state lifecycle fix.

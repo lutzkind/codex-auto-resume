@@ -13,10 +13,15 @@ from . import paths
 ENV_CODEX_BIN = "CODEX_AUTO_RESUME_CODEX_BIN"
 
 #: Last-resort locations, tried in order, when ``codex`` is not on ``PATH``.
+#: The first two are the POSIX-installer symlink and Homebrew; the rest are the
+#: per-user locations the documented Windows installer creates.
 FALLBACK_BINARIES = (
     "~/.local/bin/codex",
     "/usr/local/bin/codex",
     "/opt/homebrew/bin/codex",
+    "~/.codex/packages/standalone/codex",
+    "~/AppData/Local/Programs/OpenAI/Codex/bin/codex.exe",
+    "~/.codex/packages/standalone/codex.exe",
 )
 
 

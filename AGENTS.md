@@ -38,20 +38,27 @@ Guidance for coding agents working in this repository.
 ## Commands
 
 ```bash
-python3 -m unittest discover -s tests -t tests -v   # all tests (217)
+python3 -m unittest discover -s tests -t tests -v   # all tests (309)
 python3 -m unittest discover -s tests -v            # same suite, CI-standard form
 python3 -m compileall -q src bin/codex-auto-resume
 python3 scripts/check-manifests.py                  # plugin packaging
 python3 scripts/check-no-last.py                    # explicit-session-id guard
 scripts/secret-scan.sh                              # credential scan
 scripts/check.sh                                    # all of the above
+
+# The real platform service manager (opt-in; CI runs this per OS):
+CODEX_AUTO_RESUME_PLATFORM_IT=1 python3 -m unittest discover -s tests -t tests -p "test_platform_integration.py" -v
 ```
 
 Tests are hermetic and spend no real quota. `tests/fake_codex.py` is a
 deterministic fake Codex CLI that implements the app-server methods,
 `exec resume` and transcript writing, so the whole
 start → quota → wait → exact-session resume → completion lifecycle runs in
-process, with a fake clock to accelerate reset waits.
+process, with a fake clock to accelerate reset waits. The platform integration
+test instead drives the real service manager (`systemctl --user`, `launchctl`,
+`schtasks`) with that fake CLI; it installs and removes the integration, so it
+is gated behind `CODEX_AUTO_RESUME_PLATFORM_IT=1` and must not run in the
+default suite.
 
 ## Production
 
@@ -69,8 +76,10 @@ no server, container, or hosted service.
 | State | `${XDG_STATE_HOME:-~/.local/state}/codex-auto-resume` |
 | Registered in | `/root/scripts/server_update_manifest.yaml` (git repos + CLI wrappers) |
 
-- Do not add production runtime beyond the single user unit. The waiter must
-  stay one small standard-library process plus the Codex CLI it invokes.
+- Do not add production runtime beyond the single user-level integration per
+  platform (one systemd unit, one LaunchAgent or one scheduled task). The
+  waiter must stay one small standard-library process plus the Codex CLI it
+  invokes.
 - Never change the user's Codex configuration except additively through Codex's
   own commands: `features enable plugins`, `plugin marketplace add`,
   `plugin add`, and `config/value/write` for hook trust.
@@ -80,6 +89,13 @@ no server, container, or hosted service.
   format, so a root Agent Plugins manifest silently disables every hook
   (`hooks/list` then reports zero handlers). `scripts/check-manifests.py` fails
   the build if one appears.
+- Every hook handler in `hooks/hooks.json` needs both `command` (POSIX) and
+  `commandWindows` (cmd.exe; Codex picks it on Windows —
+  `HookHandlerConfig`, serde rename `commandWindows`). The Windows command must
+  run `bin/codex-auto-resume.cmd`; `scripts/check-manifests.py` enforces both.
+- Platform code belongs in `src/codex_auto_resume/service/` (adapters),
+  `sysinfo.py` (detection + process identity), `winproc.py` and `macproc.py`.
+  The quota/recovery core must stay platform-free.
 - Confirm hook discovery with Codex itself, never by inspection:
   `codex-auto-resume trust-hooks --dry-run` prints every discovered handler with
   its `trustStatus`.
@@ -92,7 +108,7 @@ no server, container, or hosted service.
   codex-auto-resume doctor
   ```
 
-- Reinstall after changing the service generator:
+- Reinstall after changing the service generator (Linux host):
 
   ```bash
   codex-auto-resume install-service && systemctl --user restart codex-auto-resume-helper.service
@@ -118,6 +134,13 @@ which has no marketplace manifest, so `codex plugin list` and
 `codex plugin marketplace list` exit with an error. `plugin add`/`plugin list
 --marketplace codex-auto-resume` and `hooks/list` are unaffected.
 
+Cross-platform note: this host is Linux, so the macOS and Windows adapters are
+verified by CI (real `launchctl` and `schtasks` lifecycles on GitHub's runners,
+plus adapter/plist/task-XML tests) rather than here. When running the gated
+integration test on this host, give it an isolated unit name
+(`linux.UNIT_NAME = "…-it-verify.service"`) so the production unit is never
+replaced — or run it from a clone in a scratch directory.
+
 Do not place credentials, auth files, prompts, or transcripts in documentation,
 issues, or handoffs.
 
@@ -126,9 +149,10 @@ issues, or handoffs.
 | Path | Purpose |
 |---|---|
 | `.codex-plugin/plugin.json` | Codex plugin manifest: `hooks`, `skills`, `interface` |
-| `hooks/hooks.json` | The five lifecycle hook handlers |
+| `hooks/hooks.json` | The five lifecycle hook handlers (`command` + `commandWindows`) |
 | `skills/codex-auto-resume/SKILL.md` | Skill for reporting status from inside Codex |
 | `bin/codex-auto-resume` | CLI and hook entry point |
+| `bin/codex-auto-resume.cmd` | Windows hook launcher (cmd.exe; finds Python itself) |
 | `src/codex_auto_resume/hooks.py` | Hook handlers (session registry, arming, cleanup) |
 | `src/codex_auto_resume/quota.py` | Usage-limit detection and reset-time parsing |
 | `src/codex_auto_resume/ratelimit.py` | `account/rateLimits/read` client |
@@ -136,9 +160,14 @@ issues, or handoffs.
 | `src/codex_auto_resume/runner.py` | `codex exec resume` invocation and outcome classification |
 | `src/codex_auto_resume/state.py` | Per-session JSON state, cancellation tombstones |
 | `src/codex_auto_resume/trust.py` | Hook trust through Codex's own config API |
-| `src/codex_auto_resume/service.py` | systemd user unit generation |
-| `scripts/` | install, uninstall, manifest check, session-id guard, secret scan |
-| `systemd/` | Reference copy of the generated unit |
+| `src/codex_auto_resume/sysinfo.py` | Platform detection, process identity, wake-channel naming |
+| `src/codex_auto_resume/winproc.py` | Windows ctypes primitives (creation time, cmdline, named event) |
+| `src/codex_auto_resume/macproc.py` | macOS `ps`/`sysctl` primitives |
+| `src/codex_auto_resume/service/` | Service adapters: `base`, `linux` (systemd), `macos` (launchd), `windows` (Task Scheduler) |
+| `src/codex_auto_resume/paths.py` | State directories for each platform, atomic writes, locking |
+| `src/codex_auto_resume/launcher.py` | Locates `bin/codex-auto-resume` for service artifacts |
+| `scripts/` | install/uninstall (sh and ps1), manifest check, session-id guard, secret scan |
+| `systemd/`, `launchd/`, `windows/` | Reference copies of the generated service artifacts |
 
 ## Documentation duties
 

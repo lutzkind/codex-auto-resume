@@ -1,4 +1,21 @@
-"""Filesystem locations, atomic writes and advisory locking."""
+"""Filesystem locations, atomic writes, advisory locking, process identity.
+
+The state directory follows each platform's convention:
+
+===========================  ==================================================
+Platform                     Default state directory
+===========================  ==================================================
+Linux / WSL                  ``${XDG_STATE_HOME:-~/.local/state}/codex-auto-resume``
+macOS                        ``~/Library/Application Support/codex-auto-resume``
+Windows                      ``%LOCALAPPDATA%\\codex-auto-resume``
+===========================  ==================================================
+
+``CODEX_AUTO_RESUME_STATE_DIR`` always wins, and an explicitly set
+``XDG_STATE_HOME`` is honoured everywhere (it is an intentional choice when
+present). On macOS an existing ``~/.local/state/codex-auto-resume`` is kept in
+use rather than silently abandoned, so pre-existing installs continue with
+their pending recoveries; the move is one directory rename either way.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +23,11 @@ import contextlib
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
+
+from . import sysinfo
 
 ENV_STATE_DIR = "CODEX_AUTO_RESUME_STATE_DIR"
 ENV_CODEX_HOME = "CODEX_HOME"
@@ -15,9 +35,16 @@ ENV_CODEX_HOME = "CODEX_HOME"
 DIR_MODE = 0o700
 FILE_MODE = 0o600
 
+#: How long a blocking lock waits before giving up (Windows retry loop).
+LOCK_TIMEOUT_SECONDS = 60.0
+
 
 def codex_home() -> Path:
-    """Return the Codex home directory Codex itself would use."""
+    """Return the Codex home directory Codex itself would use.
+
+    ``find_codex_home`` in Codex is ``$CODEX_HOME`` or ``<home>/.codex`` on
+    every platform (Windows included), which is exactly what this returns.
+    """
     override = os.environ.get(ENV_CODEX_HOME)
     if override:
         return Path(override).expanduser()
@@ -31,11 +58,52 @@ def _xdg_state_home() -> Path:
     return Path.home() / ".local" / "state"
 
 
+def _windows_local_appdata() -> Path:
+    override = os.environ.get("LOCALAPPDATA")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / "AppData" / "Local"
+
+
+def _macos_state_home() -> Path:
+    """``~/Library/Application Support`` unless XDG or a legacy dir applies."""
+    if os.environ.get("XDG_STATE_HOME"):
+        # An explicit XDG_STATE_HOME is an intentional choice; honour it.
+        return _xdg_state_home() / "codex-auto-resume"
+    legacy = Path.home() / ".local" / "state" / "codex-auto-resume"
+    if legacy.is_dir():
+        return legacy
+    return Path.home() / "Library" / "Application Support" / "codex-auto-resume"
+
+
+def state_dir_source() -> str:
+    """Where the state directory came from, for ``doctor`` output."""
+    if os.environ.get(ENV_STATE_DIR):
+        return ENV_STATE_DIR
+    if os.environ.get("XDG_STATE_HOME"):
+        return "XDG_STATE_HOME"
+    platform = sysinfo.info().os
+    if platform == sysinfo.OS_WINDOWS:
+        return "LOCALAPPDATA"
+    if platform == sysinfo.OS_MACOS:
+        if os.environ.get("XDG_STATE_HOME"):
+            return "XDG_STATE_HOME"
+        if (Path.home() / ".local" / "state" / "codex-auto-resume").is_dir():
+            return "legacy ~/.local/state"
+        return "~/Library/Application Support"
+    return "XDG_STATE_HOME (~/.local/state)"
+
+
 def state_dir() -> Path:
     """Return the tool's state directory (never created here)."""
     override = os.environ.get(ENV_STATE_DIR)
     if override:
         return Path(override).expanduser()
+    platform = sysinfo.info().os
+    if platform == sysinfo.OS_WINDOWS:
+        return _windows_local_appdata() / "codex-auto-resume"
+    if platform == sysinfo.OS_MACOS:
+        return _macos_state_home()
     return _xdg_state_home() / "codex-auto-resume"
 
 
@@ -147,9 +215,12 @@ def remove_file(path: Path) -> None:
 @contextlib.contextmanager
 def file_lock(path: Path, blocking: bool = True) -> Iterator[bool]:
     """Advisory exclusive lock. Yields True when the lock was acquired."""
+    ensure_dir(path.parent)
+    if sysinfo.is_windows():
+        yield from _windows_file_lock(path, blocking)
+        return
     import fcntl
 
-    ensure_dir(path.parent)
     handle = os.open(str(path), os.O_RDWR | os.O_CREAT, FILE_MODE)
     acquired = False
     try:
@@ -167,78 +238,60 @@ def file_lock(path: Path, blocking: bool = True) -> Iterator[bool]:
         os.close(handle)
 
 
-def boot_id() -> Optional[str]:
-    """Kernel boot id, or ``None`` where the platform does not expose one.
+def _windows_file_lock(path: Path, blocking: bool) -> Iterator[bool]:
+    """Byte-range lock through ``msvcrt.locking`` (Windows has no flock)."""
+    import msvcrt
 
-    Recorded alongside the helper pid: process start times are jiffies since
-    boot, so a pid reuse after a reboot could otherwise look like the same
-    process. This is a plain /proc read, not new infrastructure.
-    """
+    handle = os.open(str(path), os.O_RDWR | os.O_CREAT, FILE_MODE)
+    acquired = False
+    deadline = time.monotonic() + (LOCK_TIMEOUT_SECONDS if blocking else 0.0)
     try:
-        text = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
-    except (OSError, UnicodeDecodeError):
-        return None
-    text = text.strip()
-    return text or None
+        while True:
+            try:
+                msvcrt.locking(handle, msvcrt.LK_NBLCK, 1)
+                acquired = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.2)
+        yield acquired
+    finally:
+        if acquired:
+            with contextlib.suppress(OSError):
+                os.lseek(handle, 0, os.SEEK_SET)
+                msvcrt.locking(handle, msvcrt.LK_UNLCK, 1)
+        os.close(handle)
+
+
+def boot_id() -> Optional[str]:
+    """Boot identity, or ``None`` where the platform does not expose one.
+
+    Recorded alongside the helper pid: on Linux process start times are jiffies
+    since boot, so a pid reuse after a reboot could otherwise look like the same
+    process. macOS and Windows report an absolute creation time, which cannot
+    alias across a reboot; they still provide a boot id so a marker from a
+    previous boot is reported as such instead of as a generic mismatch.
+    """
+    return sysinfo.boot_id()
 
 
 def process_start_time(pid: int) -> Optional[float]:
-    """Return the start time (jiffies since boot) of ``pid`` from /proc.
-
-    Returns ``None`` on platforms without /proc (macOS, the BSDs), where PID
-    reuse cannot be detected and liveness falls back to a signal probe.
-    """
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as handle:
-            data = handle.read()
-    except OSError:
-        return None
-    # The comm field is wrapped in parentheses and may contain spaces.
-    close = data.rfind(b")")
-    if close == -1:
-        return None
-    fields = data[close + 2 :].split()
-    # Field 22 overall == index 19 here (fields[0] is "state").
-    if len(fields) < 20:
-        return None
-    try:
-        return float(fields[19])
-    except ValueError:
-        return None
+    """Start time of ``pid`` in the platform's native unit (see sysinfo)."""
+    return sysinfo.process_start_time(pid)
 
 
 def process_alive(pid: int, start_time: Optional[float] = None) -> bool:
-    """Return True when ``pid`` is alive.
+    """Return True when ``pid`` is alive *and* is the recorded process.
 
     On Linux the recorded start time is compared too, so a recycled PID is not
     mistaken for the original process. Where /proc is unavailable the check
-    degrades to a ``kill(pid, 0)`` existence probe.
+    degrades to a ``kill(pid, 0)`` existence probe (POSIX) or a process handle
+    probe (Windows), exactly as before.
     """
-    if pid <= 0:
-        return False
-    if os.path.isdir("/proc"):
-        current = process_start_time(pid)
-        if current is None:
-            return False
-        if start_time is None:
-            return True
-        # /proc reports jiffies; allow a small tolerance for rounding.
-        return abs(current - float(start_time)) <= 1.0
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return sysinfo.process_alive(pid, start_time)
 
 
 def process_cmdline(pid: int) -> str:
     """Command line of ``pid``; empty where the platform does not expose it."""
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as handle:
-            return handle.read().replace(b"\0", b" ").decode("utf-8", "replace")
-    except OSError:
-        return ""
+    return sysinfo.process_cmdline(pid)

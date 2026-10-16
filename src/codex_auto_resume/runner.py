@@ -14,7 +14,7 @@ import subprocess
 import time
 from typing import Any, Optional
 
-from . import codexenv, log, quota, state
+from . import codexenv, log, quota, state, sysinfo
 
 RESULT_COMPLETED = "completed"
 RESULT_QUOTA = "quota"
@@ -23,6 +23,38 @@ RESULT_START_FAILED = "start_failed"
 
 #: Flags that are safe for unattended operation and never escalate permissions.
 BASE_FLAGS = ("exec", "resume", "--json", "--skip-git-repo-check")
+
+
+def detach_kwargs() -> dict:
+    """Platform-appropriate "do not die with the caller" process flags.
+
+    POSIX starts the child in its own session (``setsid``); Windows has no
+    sessions to inherit, and a new process group keeps console control events
+    from reaching the helper's own process group.
+    """
+    if sysinfo.is_windows():
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": flags} if flags else {}
+    return {"start_new_session": True}
+
+
+def _is_windows_batch(binary: str) -> bool:
+    return sysinfo.is_windows() and binary.lower().endswith((".cmd", ".bat"))
+
+
+def spawn_target(command: list[str]):
+    """The exact executable/command line handed to the OS.
+
+    A ``.cmd``/``.bat`` shim (which is what an npm-managed Codex installs on
+    Windows) cannot be started by ``CreateProcess`` directly; it must go through
+    ``cmd.exe /d /s /c`` with a properly quoted command line. An ``.exe`` (the
+    documented standalone installer) is started directly, exactly as on POSIX.
+    """
+    if _is_windows_batch(command[0]):
+        comspec = os.environ.get("COMSPEC") or "cmd.exe"
+        inner = subprocess.list2cmdline(list(command))
+        return f'{comspec} /d /s /c "{inner}"'
+    return list(command)
 
 
 def build_resume_command(
@@ -109,6 +141,7 @@ def run_resume(
         "finished_at": None,
         "events": 0,
     }
+    target = spawn_target(command)
     kwargs = dict(
         cwd=workdir,
         stdin=subprocess.DEVNULL,
@@ -116,13 +149,13 @@ def run_resume(
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
-        start_new_session=True,
         env=env,
+        **detach_kwargs(),
     )
     if popen_kwargs:
         kwargs.update(popen_kwargs)
     try:
-        proc = subprocess.Popen(command, **kwargs)
+        proc = subprocess.Popen(target, **kwargs)
     except OSError as error:
         result["message"] = f"failed to start codex: {error}"
         result["result"] = RESULT_START_FAILED

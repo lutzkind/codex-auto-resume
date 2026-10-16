@@ -82,6 +82,10 @@ def check_hooks(root: pathlib.Path, failures: list[str]) -> None:
     for event in REQUIRED_EVENTS:
         if not hooks.get(event):
             failures.append(f"hooks/hooks.json is missing {event}")
+    if not (root / "bin" / "codex-auto-resume.cmd").is_file():
+        failures.append(
+            "bin/codex-auto-resume.cmd is missing; the Windows hook commands cannot run"
+        )
     for event, groups in hooks.items():
         if not isinstance(groups, list):
             failures.append(f"{event} must be a list of matcher groups")
@@ -97,6 +101,24 @@ def check_hooks(root: pathlib.Path, failures: list[str]) -> None:
                     failures.append(
                         f"{event} handler must reference ${{PLUGIN_ROOT}} so it works from any install"
                     )
+                # Codex picks `commandWindows` on Windows (codex-config
+                # HookHandlerConfig, serde rename "commandWindows"); both
+                # commands must resolve through the plugin root.
+                windows = handler.get("commandWindows")
+                if not windows:
+                    failures.append(
+                        f"{event} handler needs commandWindows so hooks run on native Windows"
+                    )
+                elif "${PLUGIN_ROOT}" not in windows:
+                    failures.append(
+                        f"{event} commandWindows must reference ${{PLUGIN_ROOT}}"
+                    )
+                else:
+                    executable = windows.strip().split()[0].strip('"')
+                    if not executable.lower().endswith(".cmd"):
+                        failures.append(
+                            f"{event} commandWindows must run bin/codex-auto-resume.cmd"
+                        )
                 timeout = handler.get("timeout")
                 if timeout is not None and not isinstance(timeout, int):
                     failures.append(f"{event} handler timeout must be an integer")

@@ -49,7 +49,9 @@ def scenario() -> dict:
 
 def default_quota_message(epoch: float) -> str:
     moment = time.localtime(epoch)
-    stamp = time.strftime("%-I:%M %p", moment)
+    # %-I (no leading zero) is a glibc extension; build it portably.
+    hour = time.strftime("%I", moment).lstrip("0") or "12"
+    stamp = f"{hour}:{time.strftime('%M %p', moment)}"
     return (
         "You\u2019ve hit your usage limit. Upgrade to Pro "
         "(https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage "

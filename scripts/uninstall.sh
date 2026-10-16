@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Remove codex-auto-resume from the local Codex CLI and user systemd.
+# Remove codex-auto-resume from the local Codex CLI and the platform's user
+# service backend (systemd --user on Linux, launchd on macOS).
 #
 #   scripts/uninstall.sh            # keep state (session/pending records)
 #   scripts/uninstall.sh --purge    # also delete the state directory
+#
+# Windows users: run scripts/uninstall.ps1 in PowerShell instead.
 set -euo pipefail
 
 PURGE=0
@@ -11,7 +14,13 @@ PURGE=0
 CODEX_BIN="${CODEX_AUTO_RESUME_CODEX_BIN:-$(command -v codex || true)}"
 MARKETPLACE_NAME="codex-auto-resume"
 PLUGIN_SELECTOR="codex-auto-resume@${MARKETPLACE_NAME}"
-STATE_DIR="${CODEX_AUTO_RESUME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/codex-auto-resume}"
+if [ -n "${CODEX_AUTO_RESUME_STATE_DIR:-}" ]; then
+  STATE_DIR="$CODEX_AUTO_RESUME_STATE_DIR"
+elif [ "$(uname -s)" = "Darwin" ] && [ -d "$HOME/Library/Application Support/codex-auto-resume" ]; then
+  STATE_DIR="$HOME/Library/Application Support/codex-auto-resume"
+else
+  STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/codex-auto-resume"
+fi
 CLI="${CODEX_AUTO_RESUME_BIN_DIR:-$HOME/.local/bin}/codex-auto-resume"
 
 log() { printf '==> %s\n' "$*"; }
@@ -20,8 +29,8 @@ warn() { printf 'warning: %s\n' "$*" >&2; }
 if [ -x "$CLI" ]; then
   log "stopping automatic resume"
   "$CLI" disable || true
-  log "removing the user service"
-  "$CLI" uninstall-service || warn "could not remove the user service"
+  log "removing the user background integration"
+  "$CLI" uninstall-service || warn "could not remove the helper integration"
 fi
 
 if [ -n "$CODEX_BIN" ]; then

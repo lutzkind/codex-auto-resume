@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Reference copy only.
+
+  `codex-auto-resume install-service` generates the real LaunchAgent at
+  ~/Library/LaunchAgents/com.lutzkind.codex-auto-resume.helper.plist with the
+  absolute paths of your interpreter, launcher and Codex binary baked in, plus
+  the state directory the helper must use. This file documents the shape of
+  that property list; it is not installed verbatim.
+
+  Semantics, mirrored from the systemd unit:
+    RunAtLoad                          = WantedBy=default.target (starts at login)
+    KeepAlive{SuccessfulExit: false}   = Restart=on-failure
+    AbandonProcessGroup                = KillMode=process
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.lutzkind.codex-auto-resume.helper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3</string>
+        <string>/Users/you/codex-auto-resume/bin/codex-auto-resume</string>
+        <string>helper</string>
+        <string>--state-dir</string>
+        <string>/Users/you/Library/Application Support/codex-auto-resume</string>
+        <string>--codex-bin</string>
+        <string>/opt/homebrew/bin/codex</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>AbandonProcessGroup</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/you/Library/Application Support/codex-auto-resume/logs/helper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/you/Library/Application Support/codex-auto-resume/logs/helper.log</string>
+</dict>
+</plist>

@@ -215,10 +215,19 @@ class DoctorTests(StateCase):
             ),
             mock.patch.object(
                 service,
-                "service_state",
-                return_value={"active": "inactive", "enabled": "enabled", "unit": "unit"},
+                "service_status",
+                return_value={
+                    "backend": "systemd",
+                    "display": "systemd --user",
+                    "installed": True,
+                    "active": "inactive",
+                    "enabled": "enabled",
+                    "artifact": "unit",
+                    "detail": "",
+                    "start_hint": "systemctl --user start codex-auto-resume-helper.service",
+                },
             ),
-            mock.patch.object(cli, "_unit_installed", return_value=True),
+            mock.patch.object(service, "available", return_value=(True, "systemd available")),
         ]
         with ExitStack() as stack:
             for patch in patches:

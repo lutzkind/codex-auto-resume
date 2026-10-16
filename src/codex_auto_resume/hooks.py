@@ -31,8 +31,9 @@ import sys
 import time
 from typing import Any, Optional
 
-from . import log, paths, quota, state
+from . import log, paths, quota, state, sysinfo
 
+#: Kept for backwards compatibility with the systemd-era log lines.
 HELPER_UNIT = "codex-auto-resume-helper.service"
 #: Codex clamps SessionEnd/Interrupt hook timeouts, so keep the work tiny.
 FAST_EVENTS = {"SessionEnd", "Interrupt"}
@@ -78,25 +79,42 @@ def read_payload() -> dict:
 
 
 def _ensure_helper_running() -> None:
+    """Wake the helper, or ask the platform backend to start it.
+
+    The hook must never block a Codex turn: every failure is swallowed and the
+    backend's start call is fire-and-forget on all three platforms
+    (``systemctl --user start --no-block`` / ``launchctl kickstart`` on a loaded
+    agent / ``schtasks /run``).
+    """
     from . import helper
 
     if helper.notify_helper():
         return
     try:
-        subprocess.Popen(
-            ["systemctl", "--user", "start", "--no-block", HELPER_UNIT],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError:
+        from . import service
+
+        service.start_helper()
         return
+    except Exception:  # noqa: BLE001 - a hook must never fail Codex
+        pass
+    # Last resort for older Linux installs where the module is present but the
+    # backend raised: the systemctl shape that was verified before.
+    if not sysinfo.is_windows():
+        try:
+            subprocess.Popen(
+                ["systemctl", "--user", "start", "--no-block", HELPER_UNIT],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            return
 
 
 def _session_record(payload: dict, attached: bool, event: str) -> dict:
     session_id = str(payload.get("session_id") or "")
-    pid = os.getppid()
+    pid = sysinfo.host_pid()
     record = state.read_session(session_id) or {}
     record.update(
         {

@@ -51,6 +51,16 @@ codex-auto-resume cancel <SESSION-ID>  # cancel one pending recovery
 codex-auto-resume cancel --all         # cancel all pending recoveries
 ```
 
+## How it runs
+
+The waiter runs outside Codex as one user-level background integration, chosen
+automatically for the platform: a `systemd --user` unit on Linux (and WSL with
+systemd), a `launchd` LaunchAgent on macOS, or a per-user Task Scheduler task on
+Windows. `codex-auto-resume doctor` reports the detected platform and backend
+first (`[ok] platform: …`, `[ok] service backend: …`); `install-service` and
+`uninstall-service` manage the integration for the current platform. None of
+this needs root.
+
 ## Rules
 
 - Never claim a session was resumed unless `status`/`logs` show it.

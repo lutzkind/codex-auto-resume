@@ -101,7 +101,7 @@ class PidStateTests(StateCase):
             # The liveness probe itself may use kill(pid, 0) where /proc is
             # unavailable, so assert on the signal that was never sent.
             self.assertNotIn(
-                signal.SIGUSR1,
+                getattr(signal, "SIGUSR1", None),
                 [call[0][1] for call in kill.call_args_list],
                 "must not signal an unrelated process",
             )
@@ -183,6 +183,7 @@ class PidStateTests(StateCase):
         self.assertEqual(verdict["state"], helper.PID_STATE_STALE)
         self.assertEqual(verdict["reason"], "pid_start_mismatch")
 
+    @unittest.skipUnless(hasattr(signal, "SIGUSR1"), "SIGUSR1 is POSIX-only")
     def test_notify_helper_signals_the_identified_helper(self) -> None:
         helper.write_pid()
         with mock.patch.object(paths, "process_alive", return_value=True), mock.patch.object(
@@ -282,7 +283,7 @@ class RealHelperProcessTests(StateCase):
         env["CODEX_HOME"] = str(self.codex_home)
         env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            [sys.executable, "-m", "codex_auto_resume", "helper", "--codex-bin", "/bin/true"],
+            [sys.executable, "-m", "codex_auto_resume", "helper", "--codex-bin", sys.executable],
             cwd=str(SRC.parent),
             env=env,
             stdin=subprocess.DEVNULL,

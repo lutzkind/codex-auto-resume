@@ -13,6 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC = REPO_ROOT / "src"
+PACKAGE_ROOT = SRC / "codex_auto_resume"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 if str(REPO_ROOT / "tests") not in sys.path:

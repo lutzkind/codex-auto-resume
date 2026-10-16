@@ -201,8 +201,18 @@ def make_fake_codex(directory: Path) -> str:
     The repository copy is used directly: a checkout is executable by
     definition (CI runners execute steps from it), while ``/tmp`` can be
     mounted ``noexec`` — which is exactly how the self-hosted CI containers are
-    configured. The temp-dir wrapper is only a fallback.
+    configured. The temp-dir wrapper is only a fallback. On Windows the wrapper
+    is a ``.cmd`` shim (the same shape an npm-managed Codex installs), so the
+    runner's ``cmd.exe`` spawn path is exercised by the tests.
     """
+    if sys.platform == "win32":
+        target = directory / "codex.cmd"
+        target.write_text(
+            "@echo off\r\n"
+            f'"{sys.executable}" "{FAKE_CODEX}" %*\r\n',
+            encoding="ascii",
+        )
+        return str(target)
     if os.access(FAKE_CODEX, os.X_OK):
         return str(FAKE_CODEX)
     target = directory / "codex"

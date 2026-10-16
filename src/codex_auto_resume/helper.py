@@ -15,7 +15,7 @@ import socket
 import time
 from typing import Optional
 
-from . import log, paths, quota, ratelimit, runner, state
+from . import log, paths, quota, ratelimit, runner, state, sysinfo
 
 MAX_SLEEP_SLICE = 3600.0
 MAX_ATTEMPTS = 100
@@ -42,7 +42,19 @@ DAEMON_CMDLINE_MARKERS = ("app-server --listen", "--managed-daemon")
 
 
 class Waiter:
-    """Signal-aware sleeper so new state changes are noticed immediately."""
+    """Signal-aware sleeper so new state changes are noticed immediately.
+
+    POSIX uses ``SIGUSR1``/``SIGUSR2`` plus ``signal.set_wakeup_fd`` writing into
+    a socketpair. Windows has neither signal, so the helper publishes a named
+    auto-reset event (:mod:`codex_auto_resume.winproc`) and a daemon thread
+    bridges it into the same socketpair; the sleep loop is identical either way.
+    When the event cannot be created the Windows fallback shortens the sleep
+    slice so state changes are still picked up within seconds instead of at the
+    reset time.
+    """
+
+    #: Sleep slice used when no wake channel exists at all (Windows fallback).
+    FALLBACK_SLICE_SECONDS = 5.0
 
     def __init__(self) -> None:
         self._read, self._write = socket.socketpair()
@@ -50,15 +62,57 @@ class Waiter:
         self._write.setblocking(False)
         self._installed = False
         self.woken = False
+        self._wake_handle: Optional[int] = None
+        self._wake_thread = None
+        self._closed = False
 
     def install(self) -> None:
+        if sysinfo.is_windows():
+            self._install_event_watcher()
+            return
+        self._install_signals()
+
+    def _install_signals(self) -> None:
         try:
             signal.set_wakeup_fd(self._write.fileno())
-            for signum in (signal.SIGUSR1, signal.SIGUSR2):
+            installed = False
+            for name in ("SIGUSR1", "SIGUSR2"):
+                signum = getattr(signal, name, None)
+                if signum is None:
+                    continue
                 signal.signal(signum, self._handler)
-            self._installed = True
+                installed = True
+            self._installed = installed
         except (OSError, ValueError):
             self._installed = False
+
+    def _install_event_watcher(self) -> None:
+        """Windows: wait on the named event in a thread, flag the main loop."""
+        from . import winproc
+
+        name = sysinfo.wake_channel_name(str(paths.state_dir()))
+        handle = winproc.create_wake_event(name)
+        if not handle:
+            log.log("helper_wake_channel_unavailable", name=name)
+            return
+        self._wake_handle = handle
+        self._installed = True
+        import threading
+
+        def _watch() -> None:
+            while not self._closed:
+                if not winproc.wait_event(handle, 1.0):
+                    continue
+                self.woken = True
+                try:
+                    self._write.send(b"w")
+                except OSError:
+                    return
+
+        self._wake_thread = threading.Thread(
+            target=_watch, name="codex-auto-resume-wake", daemon=True
+        )
+        self._wake_thread.start()
 
     def _handler(self, signum, frame) -> None:  # noqa: ANN001 - signal handler
         del signum, frame
@@ -80,8 +134,13 @@ class Waiter:
             except OSError:
                 return
 
+    def _slice(self, remaining: float) -> float:
+        if self._installed or not sysinfo.is_windows():
+            return min(remaining, MAX_SLEEP_SLICE)
+        return min(remaining, self.FALLBACK_SLICE_SECONDS)
+
     def sleep_until(self, deadline: float, should_stop=None) -> None:
-        """Sleep until ``deadline``, returning early when a signal arrives.
+        """Sleep until ``deadline``, returning early when a wake arrives.
 
         Returning early lets the caller re-read state and look for other work
         (for example a different session that just hit its quota) without
@@ -93,7 +152,7 @@ class Waiter:
             remaining = deadline - time.time()
             if remaining <= 0:
                 return
-            slice_seconds = min(remaining, MAX_SLEEP_SLICE)
+            slice_seconds = self._slice(remaining)
             try:
                 select.select([self._read], [], [], slice_seconds)
             except (OSError, ValueError):
@@ -103,7 +162,13 @@ class Waiter:
                 return
 
     def close(self) -> None:
-        if self._installed:
+        self._closed = True
+        if self._wake_handle is not None:
+            from . import winproc
+
+            winproc.close_handle(self._wake_handle)
+            self._wake_handle = None
+        if self._installed and not sysinfo.is_windows():
             try:
                 signal.set_wakeup_fd(-1)
             except (OSError, ValueError):
@@ -139,14 +204,49 @@ class Shutdown:
                 continue
 
 
+def codex_daemon_pids() -> set[int]:
+    """PIDs Codex itself records for its shared local app-server daemon.
+
+    Codex keeps ``<CODEX_HOME>/app-server-daemon/daemon.pid`` (managed installs)
+    or ``<CODEX_HOME>/app-server.pid`` (standalone installs) as a JSON record
+    with a ``pid`` field. Verified against the installed CLI on this host:
+    ``{"pid":1537123,"processStartTime":...}``. This is used only as a positive
+    signal — a missing or unreadable file simply falls back to the command-line
+    markers below, so a future format change degrades instead of misbehaving.
+    """
+    from pathlib import Path
+
+    home = paths.codex_home()
+    found: set[int] = set()
+    for relative in ("app-server-daemon/daemon.pid", "app-server.pid"):
+        record = paths.read_json(home / relative)
+        if isinstance(record, dict):
+            pid = record.get("pid")
+            if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+                found.add(pid)
+            continue
+        try:
+            text = Path(home / relative).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        text = text.strip()
+        if text.isdigit():
+            found.add(int(text))
+    return found
+
+
 def is_shared_daemon(pid: int) -> bool:
     """True when ``pid`` is the shared app-server daemon, not a session host.
 
     An interactive TUI runs its thread on the shared local app-server daemon,
     so the hook payload's parent process is the daemon. It stays alive after the
     user quits the client, so it can never be used as an "is this session still
-    attached" signal.
+    attached" signal. Two independent, verified signals are used, because
+    command lines cannot be read on every platform: Codex's own daemon pid file
+    first, then the daemon's command-line markers.
     """
+    if pid in codex_daemon_pids():
+        return True
     cmdline = paths.process_cmdline(pid)
     return any(marker in cmdline for marker in DAEMON_CMDLINE_MARKERS)
 
@@ -647,12 +747,13 @@ def _pid_record(
 def looks_like_helper_process(pid: int) -> bool:
     """True when ``pid`` can be positively identified as this helper.
 
-    Pids are recycled, so a pid file is a claim, not a fact. On Linux the
-    recorded start time is checked first (in :func:`paths.process_alive`); the
-    command line must then contain the helper invocation itself. A recycled pid
-    belonging to any other program — including another ``codex-auto-resume``
-    subcommand — is rejected. Where the platform exposes no command line the
-    check degrades to the recorded start time, as it always has.
+    Pids are recycled, so a pid file is a claim, not a fact. The recorded start
+    time is checked first (in :func:`paths.process_alive`); the command line
+    must then contain the helper invocation itself. A recycled pid belonging to
+    any other program — including another ``codex-auto-resume`` subcommand — is
+    rejected. Where the platform exposes no command line (or none could be read
+    for this process), the check degrades to the recorded start time plus the
+    platform's process identity, as it always has.
     """
     text = paths.process_cmdline(pid)
     if not text:
@@ -776,6 +877,7 @@ def write_pid() -> None:
                 "pid": pid,
                 "pid_start": paths.process_start_time(pid),
                 "boot_id": paths.boot_id(),
+                "platform": sysinfo.info().os,
                 "started_at": time.time(),
                 "cmdline": "codex_auto_resume helper",
             },
@@ -794,10 +896,27 @@ def remove_own_pid() -> None:
 
 
 def notify_helper() -> bool:
-    """Wake a running helper so it re-reads state immediately."""
+    """Wake a running helper so it re-reads state immediately.
+
+    POSIX sends ``SIGUSR1`` to the identified helper process. Windows has no
+    such signal, so the helper's named auto-reset event is signalled instead;
+    when the helper is not running (or the event cannot be opened) the caller
+    falls back to asking the service backend to start it.
+    """
     verdict = helper_pid_state()
     if verdict["state"] != PID_STATE_RUNNING:
         return False
+    if sysinfo.is_windows():
+        from . import winproc
+
+        name = sysinfo.wake_channel_name(str(paths.state_dir()))
+        handle = winproc.open_wake_event(name)
+        if not handle:
+            return False
+        try:
+            return winproc.set_event(handle)
+        finally:
+            winproc.close_handle(handle)
     try:
         os.kill(verdict["pid"], signal.SIGUSR1)
     except OSError:

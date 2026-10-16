@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import __version__, codexenv, helper, hooks, log, paths, state
+from . import __version__, codexenv, helper, hooks, log, paths, state, sysinfo
 
-UNIT_NAME = "codex-auto-resume-helper.service"
 CLI_NAME = "codex-auto-resume"
 
 
@@ -46,9 +46,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     settings = state.load_settings()
     pending = state.iter_pending()
     pid_state = helper.helper_pid_state()
+    from . import service as service_module
+
+    platform = sysinfo.info()
+    service_report = service_module.service_status()
     payload = {
         "enabled": bool(settings.get("enabled", True)),
         "state_dir": str(paths.state_dir()),
+        "platform": platform.as_dict(),
+        "service": {
+            "backend": service_report.get("backend"),
+            "installed": service_report.get("installed"),
+            "active": service_report.get("active"),
+            "enabled": service_report.get("enabled"),
+        },
         "helper_running": pid_state["state"] == helper.PID_STATE_RUNNING,
         "helper_state": pid_state["state"],
         "helper_pid": pid_state["pid"],
@@ -181,13 +192,34 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     del args
+    from . import service as service_module
+
     codex_bin = codexenv.resolve_codex_binary()
     codex_home = paths.codex_home()
+    platform = sysinfo.info()
+    service_report = service_module.service_status()
     checks: list[tuple[str, bool, str]] = []
 
+    checks.append(("platform", True, platform.label()))
+    checks.append(
+        (
+            "service backend",
+            service_report.get("backend") != "unsupported",
+            "{} ({})".format(
+                service_report.get("display") or service_report.get("backend"),
+                "available" if _backend_available() else "unavailable",
+            ),
+        )
+    )
     checks.append(("codex binary", bool(codex_bin), codex_bin or "not found on PATH"))
     checks.append(("codex home", codex_home.is_dir(), str(codex_home)))
-    checks.append(("state dir", paths.state_dir().is_dir(), str(paths.state_dir())))
+    checks.append(
+        (
+            "state dir",
+            paths.state_dir().is_dir(),
+            f"{paths.state_dir()} (source: {paths.state_dir_source()})",
+        )
+    )
 
     config = codexenv.read_config()
     features = config.get("features") or {}
@@ -229,13 +261,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             json.dumps(verdict, ensure_ascii=False) if snapshot else "unavailable",
         )
     )
-    checks.append(("helper service installed", _unit_installed(), UNIT_NAME))
-    state_report = _service_state()
+    checks.append(
+        (
+            "helper service installed",
+            bool(service_report.get("installed")),
+            str(service_report.get("artifact") or service_report.get("backend")),
+        )
+    )
     checks.append(
         (
             "helper service enabled for boot",
-            state_report.get("enabled") == "enabled",
-            f"enabled={state_report.get('enabled')} active={state_report.get('active')}",
+            str(service_report.get("enabled")) in ("enabled", "loaded"),
+            "enabled={} active={}{}".format(
+                service_report.get("enabled"),
+                service_report.get("active"),
+                f" · {service_report['detail']}" if service_report.get("detail") else "",
+            ),
         )
     )
     helper_ok, helper_detail = _helper_health()
@@ -266,10 +307,10 @@ def _helper_health() -> tuple[bool, str]:
         )
     active = state.active_pending()
     if active and state.is_enabled():
-        return False, (
-            f"not running with {len(active)} active recovery(ies); "
-            f"start it with: systemctl --user start {UNIT_NAME}"
-        )
+        from . import service as service_module
+
+        start_hint = service_module.service_status().get("start_hint") or "start the helper"
+        return False, f"not running with {len(active)} active recovery(ies); {start_hint}"
     if verdict["state"] == helper.PID_STATE_IDLE:
         detail = "no helper process, no active recoveries"
     else:
@@ -295,18 +336,14 @@ def _trusted_plugin_hooks(codex_bin: Optional[str], codex_home) -> list[dict]:
     return trust.plugin_hook_status(codex_bin, str(codex_home))
 
 
-def _unit_installed() -> bool:
-    unit_path = Path.home() / ".config" / "systemd" / "user" / UNIT_NAME
-    return unit_path.exists()
-
-
-def _service_state() -> dict:
-    from . import service
+def _backend_available() -> bool:
+    from . import service as service_module
 
     try:
-        return service.service_state()
-    except (OSError, RuntimeError):
-        return {"active": "unavailable", "enabled": "unavailable", "unit": str(service.unit_path())}
+        available, _ = service_module.available()
+        return available
+    except Exception:  # noqa: BLE001 - doctor must report, not crash
+        return False
 
 
 def cmd_trust_hooks(args: argparse.Namespace) -> int:
@@ -328,20 +365,36 @@ def cmd_trust_hooks(args: argparse.Namespace) -> int:
 
 def cmd_install_service(args: argparse.Namespace) -> int:
     del args
-    from . import service
+    from . import service as service_module
 
     codex_bin = codexenv.resolve_codex_binary()
-    path = service.install_unit(codex_bin=codex_bin)
-    print(f"codex-auto-resume: installed {path}")
+    platform = sysinfo.info()
+    try:
+        description = service_module.install_service(codex_bin)
+    except service_module.ServiceError as error:
+        print(
+            "codex-auto-resume: could not install the helper integration on "
+            f"{platform.label()} ({platform.service_backend}): {error}",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"codex-auto-resume: installed helper integration "
+        f"({service_module.backend().display}): {description}"
+    )
     return 0
 
 
 def cmd_uninstall_service(args: argparse.Namespace) -> int:
     del args
-    from . import service
+    from . import service as service_module
 
-    service.uninstall_unit()
-    print("codex-auto-resume: helper service removed")
+    try:
+        service_module.uninstall_service()
+    except service_module.ServiceError as error:
+        print(f"codex-auto-resume: could not remove the helper integration: {error}", file=sys.stderr)
+        return 1
+    print("codex-auto-resume: helper integration removed")
     return 0
 
 
@@ -350,6 +403,13 @@ def cmd_hook(args: argparse.Namespace) -> int:
 
 
 def cmd_helper(args: argparse.Namespace) -> int:
+    # The installed service passes the state dir (and CODEX_HOME when it was
+    # set at install time) explicitly, so the helper does not depend on the
+    # service manager's environment — which is minimal on launchd/Windows.
+    if getattr(args, "state_dir", None):
+        os.environ[paths.ENV_STATE_DIR] = args.state_dir
+    if getattr(args, "codex_home", None):
+        os.environ[paths.ENV_CODEX_HOME] = args.codex_home
     codex_bin = args.codex_bin or codexenv.resolve_codex_binary()
     return helper.main(codex_bin)
 
@@ -413,6 +473,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_helper = sub.add_parser("helper", help="internal: run the resume helper in the foreground")
     run_helper.add_argument("--codex-bin", default=None)
+    run_helper.add_argument(
+        "--state-dir",
+        default=None,
+        help="internal: state directory the installed service was created with",
+    )
+    run_helper.add_argument(
+        "--codex-home",
+        default=None,
+        help="internal: CODEX_HOME the installed service was created with",
+    )
     run_helper.set_defaults(func=cmd_helper)
 
     version = sub.add_parser("version", help="print the version")

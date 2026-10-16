@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Install codex-auto-resume into the local Codex CLI and user systemd.
+# Install codex-auto-resume into the local Codex CLI and the user service
+# backend for this platform (systemd --user on Linux, launchd on macOS).
 #
 # Steps:
 #   1. put the CLI on PATH (~/.local/bin by default)
 #   2. enable the Codex `plugins` feature if needed
 #   3. add this checkout as a Codex plugin marketplace and install the plugin
 #   4. persist hook trust through Codex's own config API
-#   5. install and enable the user service that does the waiting
+#   5. install and enable the user background integration that does the waiting
 #
 # Everything here is additive: no existing Codex configuration, plugin, hook,
 # skill or MCP server is modified.
+#
+# Windows users: run scripts/install.ps1 in PowerShell instead.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -53,12 +56,13 @@ log "installing plugin $PLUGIN_SELECTOR"
 log "persisting hook trust"
 "$CLI" trust-hooks
 
-log "installing the user service"
+log "installing the user background integration"
 "$CLI" install-service
 
-# Without lingering, the user manager (and so the waiting helper) stops when the
-# last login session ends. Needed for the wait to survive logout and reboot.
-if command -v loginctl >/dev/null 2>&1; then
+# Linux only: without lingering, the user manager (and so the waiting helper)
+# stops when the last login session ends. Needed for the wait to survive logout
+# and reboot. launchd has no equivalent and restarts the agent at login.
+if [ "$(uname -s)" = "Linux" ] && command -v loginctl >/dev/null 2>&1; then
   if [ "$(loginctl show-user "$(id -un)" -p Linger 2>/dev/null | cut -d= -f2)" != "yes" ]; then
     log "enabling lingering so the waiter survives logout and reboot"
     loginctl enable-linger "$(id -un)" 2>/dev/null || warn "could not enable lingering; run: sudo loginctl enable-linger $(id -un)"

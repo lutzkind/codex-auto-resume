@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -26,11 +26,32 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Show interpreter
-        run: python3 -VV
+        run: python -VV
       - name: Unit and integration tests
-        run: python3 -W ignore::ResourceWarning -m unittest discover -s tests -t tests -v
+        run: python -W ignore::ResourceWarning -m unittest discover -s tests -t tests -v
       - name: Compile check
-        run: python3 -m compileall -q src bin/codex-auto-resume
+        run: python -m compileall -q src bin/codex-auto-resume
+
+  # The lifecycle that matters: the helper installed, started, woken and used to
+  # resume an exact session by the real platform service manager (systemd --user,
+  # launchd, Task Scheduler). If a runner's user session cannot provide that
+  # facility the test prints the exact limitation instead of passing silently.
+  platform-lifecycle:
+    name: real lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CODEX_AUTO_RESUME_PLATFORM_IT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - name: Platform lifecycle through the real service manager
+        run: python -W ignore::ResourceWarning -m unittest discover -s tests -t tests -p "test_platform_integration.py" -v
 
   packaging:
     name: plugin packaging
