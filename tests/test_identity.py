@@ -151,6 +151,20 @@ class WindowsProcessTests(_PlatformOverride):
         with mock.patch.object(winproc, "process_start_time", return_value=None):
             self.assertFalse(winproc.process_alive(4242, None))
 
+    def test_exited_process_is_dead_even_if_the_handle_still_exists(self) -> None:
+        """A terminated child whose handle is unreaped must read as dead.
+
+        On Windows a killed child stays in the process table while a parent
+        handle keeps the process object alive, so opening its pid still
+        succeeds. Liveness therefore comes from WaitForSingleObject, exposed
+        here through ``_is_running``.
+        """
+        with mock.patch.object(winproc, "_open", return_value=7), mock.patch.object(
+            winproc, "_close"
+        ), mock.patch.object(winproc, "_is_running", return_value=False):
+            self.assertIsNone(winproc.process_start_time(4242))
+            self.assertFalse(winproc.process_alive(4242, None))
+
     def test_sysinfo_dispatches_to_winproc(self) -> None:
         with mock.patch.object(winproc, "process_start_time", return_value=99.0) as call:
             self.assertEqual(sysinfo.process_start_time(7), 99.0)

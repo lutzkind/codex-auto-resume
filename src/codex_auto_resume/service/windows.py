@@ -284,12 +284,22 @@ class WindowsBackend(ServiceBackend):
         return f"task {TASK_NAME} (definition kept at {path})"
 
     def uninstall(self) -> None:
+        # Stop whatever is serving a recovery before the integration goes away;
+        # a helper started detached is not owned by the task, so it is
+        # terminated explicitly (see stop()).
+        try:
+            self.stop()
+        except Exception:  # noqa: BLE001 - removal must continue
+            pass
         self._schtasks("/delete", "/tn", TASK_NAME, "/f", check=False, text=False)
         if self.installed():
             raise RuntimeError(f"could not delete scheduled task {TASK_NAME}")
         path = task_xml_path()
         if path.exists():
             path.unlink()
+        invocation = path.with_name("helper-command.json")
+        if invocation.exists():
+            invocation.unlink()
 
     def start(self) -> None:
         """Start the helper now, and never silently fail to.
@@ -338,7 +348,19 @@ class WindowsBackend(ServiceBackend):
         return False
 
     def stop(self) -> None:
+        """End the task and terminate a detached helper, if one is identified."""
         self._schtasks("/end", "/tn", TASK_NAME, check=False, text=False)
+        from .. import helper
+
+        verdict = helper.helper_pid_state()
+        if verdict.get("state") != helper.PID_STATE_RUNNING:
+            return
+        import signal
+
+        try:
+            os.kill(int(verdict["pid"]), signal.SIGTERM)
+        except OSError:
+            return
 
     def status(self) -> dict:
         completed = self._schtasks("/query", "/tn", TASK_NAME, "/xml", check=False, text=False)
