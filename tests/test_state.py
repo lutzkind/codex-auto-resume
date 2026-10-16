@@ -37,6 +37,7 @@ class SettingsTests(StateCase):
         state.set_enabled(True)
         self.assertTrue(state.is_enabled())
 
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX mode bits; %LOCALAPPDATA% ACLs apply")
     def test_settings_file_has_restrictive_permissions(self) -> None:
         state.set_enabled(False)
         mode = os.stat(self.paths.config_file()).st_mode & 0o777

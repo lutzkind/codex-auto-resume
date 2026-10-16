@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import json
 import os
-import select
 import subprocess
 import time
 from typing import Any, Optional
 
-from . import __version__
+from . import __version__, appserver
 
 DEFAULT_TIMEOUT = 30.0
 INITIALIZE_REQUEST_ID = 1
@@ -36,18 +35,12 @@ def _write(stream, payload: dict) -> None:
     stream.flush()
 
 
-def _read_response(proc, request_id: int, deadline: float) -> Optional[dict]:
+def _read_response(reader: appserver.LineReader, proc, request_id: int, deadline: float) -> Optional[dict]:
     """Read JSON-RPC messages until the response for ``request_id`` arrives."""
     while True:
-        remaining = deadline - time.time()
-        if remaining <= 0:
+        line = reader.read_line(deadline)
+        if line is None:
             return None
-        ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 1.0))
-        if not ready:
-            if proc.poll() is not None:
-                return None
-            continue
-        line = proc.stdout.readline()
         if not line:
             if proc.poll() is not None:
                 return None
@@ -78,15 +71,8 @@ def query(
         env["CODEX_HOME"] = codex_home
     proc = None
     try:
-        proc = subprocess.Popen(
-            [codex_bin, "app-server", "--stdio"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-            env=env,
-        )
+        proc = appserver.spawn_app_server(codex_bin, extra_env=env)
+        reader = appserver.LineReader(proc.stdout)
     except OSError:
         return None
 
@@ -107,7 +93,7 @@ def query(
                 },
             },
         )
-        initialized = _read_response(proc, INITIALIZE_REQUEST_ID, deadline)
+        initialized = _read_response(reader, proc, INITIALIZE_REQUEST_ID, deadline)
         if initialized is None:
             return None
         _write(proc.stdin, {"jsonrpc": "2.0", "method": "initialized", "params": {}})
@@ -120,7 +106,7 @@ def query(
                 "params": {},
             },
         )
-        response = _read_response(proc, READ_REQUEST_ID, deadline)
+        response = _read_response(reader, proc, READ_REQUEST_ID, deadline)
         if response is None:
             return None
         return normalize(response)

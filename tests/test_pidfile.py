@@ -319,11 +319,17 @@ class RealHelperProcessTests(StateCase):
         self.assertIn("running", detail)
         self.assertIn(str(proc.pid), detail)
 
-        # What `systemctl --user stop` does: SIGTERM, then a normal exit.
+        # What `systemctl --user stop` / `launchctl kill SIGTERM` does: a
+        # graceful exit that removes its own marker. Windows has no SIGTERM for
+        # a plain child process (`terminate()` hard-kills it), so there the
+        # leftover marker must reconcile exactly like a killed helper's.
         proc.terminate()
-        self.assertEqual(proc.wait(timeout=15), 0)
+        exit_code = proc.wait(timeout=15)
+        helper.reconcile_helper_pid()
         self.assertFalse(paths.helper_pid_file().exists())
         self.assertEqual(helper.helper_pid_state()["state"], helper.PID_STATE_IDLE)
+        if os.name != "nt":
+            self.assertEqual(exit_code, 0, "SIGTERM must be handled and exit cleanly")
 
     def test_killed_helper_leaves_a_marker_that_reconciles(self) -> None:
         proc = self.spawn_helper()
@@ -350,8 +356,11 @@ class RealHelperProcessTests(StateCase):
         record = paths.read_json(paths.helper_pid_file()) or {}
         self.assertEqual(record["pid"], second.pid)
         second.terminate()
-        self.assertEqual(second.wait(timeout=15), 0)
+        exit_code = second.wait(timeout=15)
+        helper.reconcile_helper_pid()
         self.assertFalse(paths.helper_pid_file().exists())
+        if os.name != "nt":
+            self.assertEqual(exit_code, 0)
 
     def test_doctor_reconciles_a_stale_marker(self) -> None:
         paths.atomic_write_json(

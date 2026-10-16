@@ -45,7 +45,31 @@ class _Timeout(Exception):
     pass
 
 
+#: POSIX uses an interval timer + SIGALRM; Windows has no SIGALRM, so a
+#: watchdog thread ends the hook process instead. Either way the hook exits 0
+#: and never blocks a Codex turn.
+_WATCHDOG: Optional[object] = None
+
+
 def _install_alarm(seconds: float) -> None:
+    """Bound this hook's runtime, however the platform can."""
+    global _WATCHDOG
+    if sysinfo.is_windows():
+        import threading
+
+        cancelled = threading.Event()
+
+        def _watchdog() -> None:
+            if cancelled.wait(seconds):
+                return
+            log.log("hook_deadline_reached", seconds=seconds)
+            os._exit(0)
+
+        watchdog = threading.Thread(target=_watchdog, name="hook-deadline", daemon=True)
+        watchdog.start()
+        _WATCHDOG = cancelled
+        return
+
     def handler(signum, frame):  # noqa: ANN001 - signal handler
         del signum, frame
         raise _Timeout()
@@ -53,14 +77,19 @@ def _install_alarm(seconds: float) -> None:
     try:
         signal.signal(signal.SIGALRM, handler)
         signal.setitimer(signal.ITIMER_REAL, seconds)
-    except (OSError, ValueError):
+    except (AttributeError, OSError, ValueError):
         pass
 
 
 def _clear_alarm() -> None:
+    global _WATCHDOG
+    if _WATCHDOG is not None:
+        _WATCHDOG.set()  # type: ignore[attr-defined]
+        _WATCHDOG = None
+        return
     try:
         signal.setitimer(signal.ITIMER_REAL, 0)
-    except (OSError, ValueError):
+    except (AttributeError, OSError, ValueError):
         pass
 
 
@@ -81,10 +110,9 @@ def read_payload() -> dict:
 def _ensure_helper_running() -> None:
     """Wake the helper, or ask the platform backend to start it.
 
-    The hook must never block a Codex turn: every failure is swallowed and the
-    backend's start call is fire-and-forget on all three platforms
-    (``systemctl --user start --no-block`` / ``launchctl kickstart`` on a loaded
-    agent / ``schtasks /run``).
+    The hook must never block a Codex turn: every failure is swallowed (and
+    logged) so Codex is unaffected, while a failed start is still diagnosable
+    through ``codex-auto-resume logs``/``doctor``.
     """
     from . import helper
 
@@ -95,8 +123,8 @@ def _ensure_helper_running() -> None:
 
         service.start_helper()
         return
-    except Exception:  # noqa: BLE001 - a hook must never fail Codex
-        pass
+    except Exception as error:  # noqa: BLE001 - a hook must never fail Codex
+        log.log("helper_start_failed", error=f"{type(error).__name__}: {error}")
     # Last resort for older Linux installs where the module is present but the
     # backend raised: the systemctl shape that was verified before.
     if not sysinfo.is_windows():

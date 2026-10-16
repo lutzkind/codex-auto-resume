@@ -69,11 +69,19 @@ class PlistTests(StateCase):
         self.assertIn('"kickstart"', source)
 
     def test_plist_path_is_user_space(self) -> None:
-        self.assertTrue(str(macos.plist_path()).endswith("Library/LaunchAgents/" + macos.PLIST_NAME))
+        self.assertEqual(macos.plist_path().parts[-2:], ("LaunchAgents", macos.PLIST_NAME))
         self.assertTrue(macos.domain().startswith("gui/"))
 
 
 class LaunchctlSequenceTests(StateCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # Keep the tests hermetic: the LaunchAgent directory lives under the
+        # test's own home, never the developer's.
+        home = mock.patch("pathlib.Path.home", return_value=self.tmp)
+        home.start()
+        self.addCleanup(home.stop)
+
     def _record(self):
         calls: list[list[str]] = []
 

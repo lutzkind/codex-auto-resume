@@ -39,7 +39,7 @@ def detach_kwargs() -> dict:
 
 
 def _is_windows_batch(binary: str) -> bool:
-    return sysinfo.is_windows() and binary.lower().endswith((".cmd", ".bat"))
+    return sysinfo.is_windows_batch(binary)
 
 
 def spawn_target(command: list[str]):
@@ -50,11 +50,7 @@ def spawn_target(command: list[str]):
     ``cmd.exe /d /s /c`` with a properly quoted command line. An ``.exe`` (the
     documented standalone installer) is started directly, exactly as on POSIX.
     """
-    if _is_windows_batch(command[0]):
-        comspec = os.environ.get("COMSPEC") or "cmd.exe"
-        inner = subprocess.list2cmdline(list(command))
-        return f'{comspec} /d /s /c "{inner}"'
-    return list(command)
+    return sysinfo.spawn_command(command)
 
 
 def build_resume_command(

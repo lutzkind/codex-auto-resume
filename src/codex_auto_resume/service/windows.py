@@ -28,6 +28,7 @@ task store on install.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
@@ -50,7 +51,20 @@ def task_xml_path() -> Path:
 
 
 def current_user_id() -> str:
-    """``DOMAIN\\user`` for the interactive-token principal."""
+    """``DOMAIN\\user`` for the interactive-token principal.
+
+    ``whoami`` is authoritative (it resolves the account the way Windows does);
+    the environment variables are the fallback, and ``getpass`` the last resort.
+    """
+    try:
+        completed = subprocess.run(
+            ["whoami"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10
+        )
+        value = (completed.stdout or "").strip().splitlines()
+        if completed.returncode == 0 and value and "\\" in value[0]:
+            return value[0].strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
     domain = os.environ.get("USERDOMAIN") or ""
     name = os.environ.get("USERNAME") or ""
     if domain and name:
@@ -232,7 +246,12 @@ class WindowsBackend(ServiceBackend):
             path.unlink()
 
     def start(self) -> None:
-        self._schtasks("/run", "/tn", TASK_NAME, check=False, text=False)
+        """Start the task now; raise with Task Scheduler's own words on failure."""
+        completed = self._schtasks("/run", "/tn", TASK_NAME, check=False, text=False)
+        if completed.returncode != 0:
+            raise ServiceError(
+                f"schtasks /run /tn {TASK_NAME} failed: " + _decode(completed.stdout).strip()
+            )
 
     def stop(self) -> None:
         self._schtasks("/end", "/tn", TASK_NAME, check=False, text=False)

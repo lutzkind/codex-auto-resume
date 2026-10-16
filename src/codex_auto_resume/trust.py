@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import json
 import os
-import select
 import subprocess
 import time
 from typing import Any, Optional
 
-from . import __version__
+from . import __version__, appserver
 
 PLUGIN_ID_PREFIX = "codex-auto-resume@"
 INITIALIZE_ID = 1
@@ -29,17 +28,8 @@ HOOKS_LIST_ID = 2
 
 def _exchange(codex_bin: str, codex_home: str, requests: list[dict], timeout: float = 60.0) -> list[dict]:
     """Send JSON-RPC requests to ``codex app-server --stdio`` in order."""
-    env = dict(os.environ)
-    env["CODEX_HOME"] = codex_home
-    proc = subprocess.Popen(
-        [codex_bin, "app-server", "--stdio"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-        env=env,
-    )
+    proc = appserver.spawn_app_server(codex_bin, extra_env={"CODEX_HOME": codex_home})
+    reader = appserver.LineReader(proc.stdout)
     responses: list[dict] = []
     try:
         deadline = time.time() + timeout
@@ -50,15 +40,9 @@ def _exchange(codex_bin: str, codex_home: str, requests: list[dict], timeout: fl
             if request_id is None:
                 continue
             while True:
-                remaining = deadline - time.time()
-                if remaining <= 0:
+                line = reader.read_line(deadline)
+                if line is None:
                     raise TimeoutError("timed out talking to codex app-server")
-                ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 1.0))
-                if not ready:
-                    if proc.poll() is not None:
-                        raise RuntimeError("codex app-server exited early")
-                    continue
-                line = proc.stdout.readline()
                 if not line:
                     if proc.poll() is not None:
                         raise RuntimeError("codex app-server closed stdout")

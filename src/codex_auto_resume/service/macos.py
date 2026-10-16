@@ -44,7 +44,15 @@ def plist_path() -> Path:
 
 
 def domain() -> str:
-    return f"gui/{os.getuid()}"
+    """launchd's per-user GUI domain, e.g. ``gui/501``.
+
+    ``os.getuid`` is POSIX-only; the fallback keeps the module importable and
+    callable on any platform (the macOS backend is only *used* on macOS).
+    """
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:  # pragma: no cover - Windows only
+        return "gui/0"
+    return f"gui/{getuid()}"
 
 
 def service_target() -> str:

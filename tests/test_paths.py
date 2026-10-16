@@ -148,12 +148,14 @@ class ProcessAliveTests(StateCase):
             self.skipTest("no /proc start time on this platform")
         self.assertFalse(paths.process_alive(pid, start + 10_000))
 
+    @unittest.skipIf(os.name == "nt", "the kill(pid, 0) probe is POSIX-only")
     def test_signal_probe_is_used_without_proc(self) -> None:
         with mock.patch.object(paths.os.path, "isdir", return_value=False):
             with mock.patch.object(paths.os, "kill") as kill:
                 self.assertTrue(paths.process_alive(os.getpid(), None))
         self.assertTrue(kill.called)
 
+    @unittest.skipIf(os.name == "nt", "the kill(pid, 0) probe is POSIX-only")
     def test_signal_probe_reports_missing_process(self) -> None:
         with mock.patch.object(paths.os.path, "isdir", return_value=False):
             with mock.patch.object(
@@ -161,6 +163,7 @@ class ProcessAliveTests(StateCase):
             ):
                 self.assertFalse(paths.process_alive(4242, None))
 
+    @unittest.skipIf(os.name == "nt", "the kill(pid, 0) probe is POSIX-only")
     def test_signal_probe_reports_permission_denied_as_alive(self) -> None:
         with mock.patch.object(paths.os.path, "isdir", return_value=False):
             with mock.patch.object(

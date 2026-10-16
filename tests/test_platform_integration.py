@@ -219,15 +219,22 @@ class PlatformLifecycleTests(unittest.TestCase):
         self.assertFalse(self.service.service_status()["installed"])
 
     def test_helper_starts_on_demand_and_is_identified(self) -> None:
-        from codex_auto_resume import helper
+        from codex_auto_resume import helper, log
 
         self.service.install_service(str(self.fake_bin))
-        self.service.start_helper()
+        try:
+            self.service.start_helper()
+        except Exception as error:  # noqa: BLE001 - report the platform's own words
+            self.fail(f"the {self.service.backend().display} refused to start the helper: {error}")
         started = wait_for(helper.is_helper_running, timeout=90)
-        self.assertTrue(
-            started,
-            "the service manager started nothing that could be identified as the helper",
-        )
+        if not started:
+            records = "\n".join(
+                json.dumps(record, ensure_ascii=False) for record in log.read_records(20)
+            )
+            self.fail(
+                "the service manager started nothing that could be identified as the helper; "
+                f"status={json.dumps(self.service.service_status(), default=str)}\nlogs:\n{records}"
+            )
         verdict = helper.helper_pid_state()
         self.assertEqual(verdict["state"], helper.PID_STATE_RUNNING)
         self.assertIn("helper", self.paths.process_cmdline(verdict["pid"]))

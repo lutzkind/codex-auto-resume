@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -323,6 +324,25 @@ def process_image_path(pid: int) -> str:
     if not cmdline:
         return ""
     return cmdline.split(" ", 1)[0]
+
+
+def is_windows_batch(binary: str) -> bool:
+    """True for a ``.cmd``/``.bat`` shim, which ``CreateProcess`` cannot start."""
+    return is_windows() and binary.lower().endswith((".cmd", ".bat"))
+
+
+def spawn_command(command: list[str]):
+    """The exact target handed to ``subprocess`` for ``command``.
+
+    Returns a list (an ``.exe`` or any POSIX binary, started directly) or, on
+    Windows only, a command line string routed through ``cmd.exe /d /s /c`` for
+    a ``.cmd``/``.bat`` shim — which is what an npm-managed Codex installs.
+    """
+    if is_windows_batch(command[0]):
+        comspec = os.environ.get("COMSPEC") or "cmd.exe"
+        inner = subprocess.list2cmdline(list(command))
+        return f'{comspec} /d /s /c "{inner}"'
+    return list(command)
 
 
 def host_pid() -> int:

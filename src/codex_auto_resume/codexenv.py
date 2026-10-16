@@ -49,9 +49,11 @@ def codex_version(codex_bin: Optional[str]) -> Optional[str]:
         return None
     import subprocess
 
+    from . import sysinfo
+
     try:
         completed = subprocess.run(
-            [codex_bin, "--version"],
+            sysinfo.spawn_command([codex_bin, "--version"]),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=30,

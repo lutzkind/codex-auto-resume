@@ -37,7 +37,11 @@ class UnitTemplateTests(StateCase):
         self.assertEqual(linux.package_parent(), str(REPO_ROOT / "src"))
 
     def test_unit_path_is_the_user_unit(self) -> None:
-        self.assertTrue(str(linux.unit_path()).endswith(".config/systemd/user/codex-auto-resume-helper.service"))
+        parts = linux.unit_path().parts
+        self.assertEqual(
+            parts[-3:], ("systemd", "user", "codex-auto-resume-helper.service")
+        )
+        self.assertTrue(str(linux.unit_path()).endswith(linux.UNIT_NAME))
 
     def test_render_escapes_percent_signs_for_systemd(self) -> None:
         rendered = linux.render_unit("/opt/100% codex/codex", python="/usr/bin/python3")
