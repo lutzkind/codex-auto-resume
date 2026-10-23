@@ -140,7 +140,7 @@ class SessionEndTests(HookCase):
     def test_duplicate_session_end_keeps_one_record(self) -> None:
         path = self.write_transcript(
             "sid",
-            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=1000.0)],
+            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=time.time())],
         )
         self.run_hook(payload("sid", str(path), "SessionEnd", reason="other"))
         first = state.read_pending("sid")
