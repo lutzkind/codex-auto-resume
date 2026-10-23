@@ -326,7 +326,9 @@ def last_turn_outcome(
         if classified == "quota":
             result["outcome"] = OUTCOME_QUOTA
             result["resumable"] = True
-            result["reset_at"] = parse_retry_time(message or "", now)
+            # "try again at 7:51 AM" means the next 7:51 AM after the message
+            # was written, not after the transcript happens to be read.
+            result["reset_at"] = parse_retry_time(message or "", result.get("at") or now)
         elif classified == "quota_no_reset":
             result["outcome"] = OUTCOME_QUOTA_NO_RESET
         else:

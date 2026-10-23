@@ -118,6 +118,14 @@ class LastTurnOutcomeTests(StateCase):
         self.assertTrue(outcome["resumable"])
         self.assertIsNotNone(outcome["reset_at"])
 
+    def test_clock_reset_is_anchored_on_the_interruption(self) -> None:
+        # Interrupted at 07:40 but first read at 08:00: the 7:51 reset has
+        # already passed, so it must not roll over to tomorrow.
+        at = datetime(2026, 10, 15, 7, 40).timestamp()
+        path = self.write_transcript("s7", [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=at)])
+        outcome = quota.last_turn_outcome(str(path), now=at + 20 * 60)
+        self.assertEqual(outcome["reset_at"], datetime(2026, 10, 15, 7, 51).timestamp())
+
     def test_normal_completion_is_not_resumable(self) -> None:
         path = self.write_transcript("s2", [task_complete()])
         outcome = quota.last_turn_outcome(str(path))
