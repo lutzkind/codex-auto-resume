@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest import mock
 
-from support import QUOTA_MESSAGE, FakeClock, StateCase, task_complete
+from support import QUOTA_MESSAGE, FakeClock, StateCase, task_complete, task_started
 from test_ratelimit import make_fake_codex
 from codex_auto_resume import helper, quota, ratelimit, runner, state
 
@@ -301,6 +301,28 @@ class RestartTests(HelperCase):
         self.assertEqual(self.resume_count_value(), 0)
         self.assertEqual(state.read_pending("sid")["state"], state.STATE_FAILED)
 
+    def test_crash_during_resume_with_a_running_turn_is_not_replayed(self) -> None:
+        transcript = self.write_transcript(
+            "sid",
+            [
+                task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=self.clock.time() - 600),
+                task_started(at=self.clock.time() - 30, turn_id="own-resume"),
+            ],
+        )
+        self.write_scenario(transcript=str(transcript))
+        self.arm_pending(
+            reset_at=self.clock.time() - 1,
+            resume_at=self.clock.time() - 1,
+            transcript=str(transcript),
+            state_name=state.STATE_RESUMING,
+            interruption_at=self.clock.time() - 600,
+        )
+        self.assertEqual(self.run_helper(), 0)
+        self.assertEqual(self.resume_count_value(), 0)
+        pending = state.read_pending("sid")
+        self.assertEqual(pending["state"], state.STATE_FAILED)
+        self.assertEqual(pending["last_result"], "ambiguous_restart")
+
 
 class SafetyTests(HelperCase):
     def test_session_a_is_resumed_not_the_newer_session_b(self) -> None:
@@ -529,6 +551,154 @@ class SafetyTests(HelperCase):
             resumed.append(argv[argv.index("resume") + 3])
         self.assertEqual(sorted(resumed), ["session-a", "session-b"])
         self.assertEqual(state.active_pending(), [])
+
+
+class AttachedAndFailureTests(HelperCase):
+    """Live 0.164.0 refused a resume while a TUI still owned the thread."""
+
+    def test_active_writer_defers_without_spending_an_attempt(self) -> None:
+        now = self.clock.time()
+        transcript = self.write_transcript(
+            "sid",
+            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=now - 600)],
+        )
+        self.write_scenario(transcript=str(transcript), resume_outcome="attached")
+        self.arm_pending(
+            reset_at=now - 1,
+            resume_at=now - 1,
+            transcript=str(transcript),
+            interruption_at=now - 600,
+        )
+        with mock.patch.object(helper, "MAX_ITERATIONS", 1):
+            self.assertEqual(self.run_helper(), 0)
+        pending = state.read_pending("sid")
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["state"], state.STATE_WAITING)
+        self.assertEqual(pending["attempts"], 0, "a refused resume is not an attempt")
+        self.assertEqual(pending["last_result"], runner.RESULT_ATTACHED)
+        self.assertIn("already has an active writer", pending["last_message"])
+        self.assertGreaterEqual(
+            pending["resume_at"], self.clock.time() + helper.MIN_ATTACHED_RECHECK - 1
+        )
+        self.assertEqual(self.resume_count_value(), 1)
+
+    def test_fatal_plain_text_error_is_not_masked_by_the_old_quota_turn(self) -> None:
+        transcript = self.write_transcript(
+            "sid",
+            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=self.clock.time() - 600)],
+        )
+        self.write_scenario(
+            transcript=str(transcript),
+            resume_outcome="fatal",
+            error_message="stream disconnected before any turn event",
+        )
+        self.arm_pending(
+            reset_at=self.clock.time() - 1,
+            resume_at=self.clock.time() - 1,
+            transcript=str(transcript),
+            interruption_at=self.clock.time() - 600,
+        )
+        with mock.patch.object(helper, "MAX_ITERATIONS", 1):
+            self.assertEqual(self.run_helper(), 0)
+        pending = state.read_pending("sid")
+        self.assertEqual(pending["state"], state.STATE_FAILED)
+        self.assertEqual(pending["last_result"], runner.RESULT_ERROR)
+        self.assertIn("stream disconnected", pending["last_message"])
+        self.assertEqual(self.resume_count_value(), 1, "no hammering after a hard failure")
+
+    def test_quota_after_resume_with_a_passed_reset_backs_off(self) -> None:
+        now = self.clock.time()
+        transcript = self.write_transcript(
+            "sid",
+            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=now - 600)],
+        )
+        self.write_scenario(transcript=str(transcript), resume_outcome="completed")
+        os.utime(transcript, (now - 600, now - 600))
+        self.arm_pending(
+            reset_at=now - 1,
+            resume_at=now - 1,
+            transcript=str(transcript),
+            interruption_at=now - 600,
+        )
+        outcome = {
+            "result": runner.RESULT_QUOTA,
+            "message": QUOTA_MESSAGE,
+            "reset_at": now - 60,
+            "started_at": now,
+            "finished_at": now,
+            "diagnostic": None,
+            "exit_code": 1,
+        }
+        with mock.patch.object(runner, "run_resume", return_value=outcome):
+            with mock.patch.object(helper.ratelimit, "query", return_value=None):
+                with mock.patch.object(helper, "MAX_ITERATIONS", 1):
+                    self.assertEqual(helper.main(self.fake_bin), 0)
+        pending = state.read_pending("sid")
+        self.assertEqual(pending["state"], state.STATE_WAITING)
+        self.assertEqual(pending["attempts"], 1)
+        self.assertGreater(
+            pending["resume_at"], now + 60, "a passed reset after a quota result must not spin"
+        )
+
+    def test_repeated_quota_respects_the_attempt_cap(self) -> None:
+        now = self.clock.time()
+        transcript = self.write_transcript(
+            "sid",
+            [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=now - 600)],
+        )
+        self.write_scenario(transcript=str(transcript), resume_outcome="completed")
+        os.utime(transcript, (now - 600, now - 600))
+        self.arm_pending(
+            reset_at=now - 1,
+            resume_at=now - 1,
+            transcript=str(transcript),
+            interruption_at=now - 600,
+        )
+        outcome = {
+            "result": runner.RESULT_QUOTA,
+            "message": QUOTA_MESSAGE,
+            "reset_at": now - 60,
+            "started_at": now,
+            "finished_at": now,
+            "diagnostic": None,
+            "exit_code": 1,
+        }
+        with mock.patch.object(runner, "run_resume", return_value=outcome):
+            with mock.patch.object(helper.ratelimit, "query", return_value=None):
+                with mock.patch.object(helper, "MAX_ATTEMPTS", 1):
+                    with mock.patch.object(helper, "MAX_ITERATIONS", 1):
+                        self.assertEqual(helper.main(self.fake_bin), 0)
+        pending = state.read_pending("sid")
+        self.assertEqual(pending["state"], state.STATE_FAILED)
+        self.assertEqual(pending["last_result"], "max_attempts")
+
+    def test_user_progress_supersedes_before_waiting_even_if_attached(self) -> None:
+        now = self.clock.time()
+        transcript = self.write_transcript(
+            "sid",
+            [
+                task_complete(
+                    message=QUOTA_MESSAGE,
+                    error_info="usage_limit_exceeded",
+                    at=now - 600,
+                    turn_id="quota-turn",
+                ),
+                task_complete(at=now - 300, turn_id="manual-turn"),
+            ],
+        )
+        self.write_scenario(transcript=str(transcript), resume_outcome="completed")
+        self.arm_pending(
+            reset_at=now + 86400,
+            resume_at=now + 86400,
+            transcript=str(transcript),
+            interruption_at=now - 600,
+            attached=True,
+            host_pid=os.getpid(),
+        )
+        with mock.patch.object(helper, "MAX_ITERATIONS", 1):
+            self.assertEqual(self.run_helper(), 0)
+        self.assertIsNone(state.read_pending("sid"))
+        self.assertEqual(self.resume_count_value(), 0)
 
 
 if __name__ == "__main__":

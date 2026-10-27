@@ -135,9 +135,91 @@ class ResumeCommandTests(unittest.TestCase):
     def test_pending_resume_at_already_passed_is_immediate(self) -> None:
         self.assertEqual(runner.pending_resume_at(1000.0, 0, now=5000.0), 5000.0)
 
+    def test_pending_resume_at_already_passed_honours_minimum_delay(self) -> None:
+        self.assertEqual(
+            runner.pending_resume_at(1000.0, 0, now=5000.0, minimum_delay=300.0),
+            5300.0,
+        )
+
     def test_pending_resume_at_without_reset_uses_backoff(self) -> None:
         value = runner.pending_resume_at(None, 0, now=100.0)
         self.assertGreater(value, 100.0)
+
+
+class ResumeFailureTests(StateCase):
+    """Plain-text Codex failures must be classified, not silently dropped."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.fake_bin = make_fake_codex(self.tmp)
+        self.scenario = self.tmp / "scenario.json"
+        self.addCleanup(lambda: os.environ.pop("FAKE_CODEX_SCENARIO", None))
+
+    def _run(self, prompt: str = "continue", **scenario) -> dict:
+        self.scenario.write_text(json.dumps(scenario), encoding="utf-8")
+        os.environ["FAKE_CODEX_SCENARIO"] = str(self.scenario)
+        return runner.run_resume(
+            self.fake_bin,
+            "01a17bd4-f2ab-7f70-a193-80aa37498f03",
+            prompt,
+            str(self.tmp),
+        )
+
+    def test_active_writer_is_its_own_outcome(self) -> None:
+        outcome = self._run(resume_outcome="attached")
+        self.assertEqual(outcome["result"], runner.RESULT_ATTACHED)
+        self.assertIn("already has an active writer", outcome["message"])
+        self.assertIn("already has an active writer", outcome["diagnostic"])
+        self.assertEqual(outcome["exit_code"], 1)
+
+    def test_active_writer_error_line_without_the_context_prefix(self) -> None:
+        message = (
+            "Error: thread/resume: thread/resume failed: thread "
+            "01a17bd4-f2ab-7f70-a193-80aa37498f03 already has an active writer "
+            "(code -32600)"
+        )
+        self.assertIsNotNone(runner._ACTIVE_WRITER_RE.search(message))
+
+    def test_plain_text_fatal_error_keeps_its_diagnostic(self) -> None:
+        outcome = self._run(resume_outcome="fatal", error_message="stream disconnected before any turn event")
+        self.assertEqual(outcome["result"], runner.RESULT_ERROR)
+        self.assertEqual(outcome["message"], "stream disconnected before any turn event")
+        self.assertIn("stream disconnected", outcome["diagnostic"])
+
+    def test_diagnostic_never_echoes_the_continuation_prompt(self) -> None:
+        prompt = "private continuation text"
+        outcome = self._run(
+            prompt=prompt,
+            resume_outcome="fatal",
+            error_message=f"could not use prompt: {prompt}",
+        )
+        self.assertNotIn(prompt, outcome["message"])
+        self.assertNotIn(prompt, outcome["diagnostic"])
+        self.assertIn("<prompt>", outcome["message"])
+
+    def test_unchanged_transcript_does_not_mask_a_failed_launch(self) -> None:
+        transcript = self.write_transcript(
+            "01a17bd4-f2ab-7f70-a193-80aa37498f03",
+            [
+                {
+                    "timestamp": "2026-10-27T06:17:22Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_complete",
+                        "turn_id": "old",
+                        "error": {
+                            "message": "You\u2019ve hit your usage limit. Try again at 8:00 AM.",
+                            "codex_error_info": "usage_limit_exceeded",
+                        },
+                    },
+                }
+            ],
+        )
+        outcome = self._run(resume_outcome="attached", transcript=str(transcript))
+        reconciled = runner.reconcile_with_transcript(
+            outcome, str(transcript), not_before=outcome["started_at"]
+        )
+        self.assertEqual(reconciled["result"], runner.RESULT_ATTACHED)
 
 
 class EventClassificationTests(unittest.TestCase):

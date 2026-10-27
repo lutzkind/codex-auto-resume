@@ -12,7 +12,7 @@ import time
 import unittest
 from unittest import mock
 
-from support import QUOTA_MESSAGE, FakeClock, StateCase, task_complete
+from support import QUOTA_MESSAGE, FakeClock, StateCase, task_complete, task_started
 from test_helper import HelperCase
 from codex_auto_resume import helper, paths, quota, state
 
@@ -98,6 +98,17 @@ class SweepArmTests(SweepCase):
             ],
         )
         self.assertEqual(helper.sweep(self.clock.time()), 0)
+
+    def test_ignores_a_quota_error_while_a_newer_turn_is_still_running(self) -> None:
+        self.rollout(
+            "sid",
+            [
+                task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=self.clock.time() - 600),
+                task_started(at=self.clock.time() - 60, turn_id="manual-turn"),
+            ],
+        )
+        self.assertEqual(helper.sweep(self.clock.time()), 0)
+        self.assertIsNone(state.read_pending("sid"))
 
     def test_ignores_a_cancelled_interruption(self) -> None:
         self.rollout(

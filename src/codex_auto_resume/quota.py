@@ -51,6 +51,7 @@ OUTCOME_QUOTA_NO_RESET = "quota_no_reset"
 OUTCOME_COMPLETED = "completed"
 OUTCOME_ABORTED = "aborted"
 OUTCOME_ERRORED = "errored"
+OUTCOME_IN_PROGRESS = "in_progress"
 OUTCOME_UNKNOWN = "unknown"
 
 _QUOTA_TEXT = re.compile(
@@ -117,6 +118,10 @@ def parse_retry_time(text: str, now: Optional[float] = None) -> Optional[float]:
     A bare clock time is resolved against local midnight and rolled forward by
     one day when it is already in the past, matching how Codex prints it (it
     only omits the date when the reset falls on the current local date).
+
+    ``now`` must be the moment the message was written, not the moment the
+    transcript happens to be read: a transcript read after the reset would
+    otherwise roll a same-day reset forward by 24 hours.
     """
     if not text:
         return None
@@ -294,11 +299,19 @@ def last_turn_outcome(
         if not isinstance(payload, dict):
             continue
         kind = payload.get("type")
-        if kind not in ("task_complete", "turn_aborted", "turn_failed"):
+        if kind not in ("task_started", "task_complete", "turn_aborted", "turn_failed"):
             continue
 
         result["turn_id"] = payload.get("turn_id") or payload.get("root_turn_id")
         result["at"] = _event_timestamp(entry)
+
+        if kind == "task_started":
+            # The newest lifecycle event is a turn that has not finished yet.
+            # An older quota error behind it is already being worked on (for
+            # example after the user typed "continue"), so the sweep must not
+            # arm a recovery for it.
+            result["outcome"] = OUTCOME_IN_PROGRESS
+            return result
 
         if kind == "turn_aborted":
             result["outcome"] = OUTCOME_ABORTED

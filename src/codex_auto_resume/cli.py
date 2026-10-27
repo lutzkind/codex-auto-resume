@@ -51,6 +51,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     platform = sysinfo.info()
     service_report = service_module.service_status()
     payload = {
+        "version": __version__,
         "enabled": bool(settings.get("enabled", True)),
         "state_dir": str(paths.state_dir()),
         "platform": platform.as_dict(),
@@ -86,6 +87,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
+    print(f"version: {payload['version']}")
     print("enabled" if payload["enabled"] else "disabled")
     print(f"helper: {'running' if payload['helper_running'] else 'not running'}")
     if not payload["pending"]:

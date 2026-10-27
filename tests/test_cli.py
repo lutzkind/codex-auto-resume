@@ -11,7 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from support import QUOTA_MESSAGE, StateCase, task_complete
-from codex_auto_resume import cli, log, paths, state
+from codex_auto_resume import __version__, cli, log, paths, state
 
 
 def run_cli(*argv: str) -> tuple[int, str, str]:
@@ -63,6 +63,7 @@ class StatusTests(StateCase):
         _, out, _ = run_cli("status", "--json")
         payload = json.loads(out)
         self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["version"], __version__)
         self.assertEqual(payload["pending"][0]["session_id"], "sid")
         self.assertEqual(payload["pending"][0]["state"], "waiting_for_quota")
 

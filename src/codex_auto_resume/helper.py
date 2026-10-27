@@ -15,7 +15,7 @@ import socket
 import time
 from typing import Optional
 
-from . import log, paths, quota, ratelimit, runner, state, sysinfo
+from . import __version__, log, paths, quota, ratelimit, runner, state, sysinfo
 
 MAX_SLEEP_SLICE = 3600.0
 MAX_ATTEMPTS = 100
@@ -310,6 +310,28 @@ def _ambiguous_resume(pending: dict) -> Optional[str]:
     return None
 
 
+def _user_progressed(pending: dict) -> bool:
+    """True when a newer successful turn followed the quota interruption.
+
+    The user may reopen the session and continue it themselves while a
+    recovery is waiting. A newer completed turn supersedes the recovery; an
+    in-progress turn is left alone because it may be the helper's own resume
+    (the completion branch in :func:`_do_resume` handles that case).
+    """
+    transcript = pending.get("transcript_path")
+    if not transcript or not os.path.exists(transcript):
+        return False
+    outcome = quota.last_turn_outcome(transcript)
+    mtime = outcome.get("transcript_mtime")
+    interruption_at = pending.get("interruption_at")
+    return bool(
+        outcome["outcome"] == quota.OUTCOME_COMPLETED
+        and mtime
+        and interruption_at
+        and float(mtime) > float(interruption_at) + 1
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Detection sweep
 #
@@ -527,6 +549,14 @@ def process_once(codex_bin: Optional[str], waiter: Waiter, shutdown: Shutdown) -
         pending["state"] = state.STATE_WAITING
         state.write_pending(pending)
 
+    if _user_progressed(pending):
+        # The user continued the session themselves; the old interruption is
+        # resolved and must not be replayed days later.
+        log.log("helper_superseded", session_id=session_id, source="pre_wait")
+        state.clear_pending(session_id, "superseded")
+        state.clear_launching(session_id)
+        return True
+
     detached, reason = session_detached(pending, session, settings, time.time())
     if not detached:
         # The user is still attached: leave the recovery armed and try again
@@ -608,21 +638,13 @@ def _do_resume(codex_bin: str, pending: dict, settings: dict, waiter: Waiter) ->
     transcript = pending.get("transcript_path")
 
     # If the user already made progress since the interruption, do not resume.
-    if transcript and os.path.exists(transcript):
-        outcome = quota.last_turn_outcome(transcript)
-        mtime = outcome.get("transcript_mtime")
-        interruption_at = pending.get("interruption_at")
-        if (
-            outcome["outcome"] == quota.OUTCOME_COMPLETED
-            and mtime
-            and interruption_at
-            and mtime > float(interruption_at) + 1
-        ):
-            log.log("helper_superseded", session_id=session_id, transcript_mtime=mtime)
-            state.clear_pending(session_id, "superseded")
-            state.clear_launching(session_id)
-            return True
+    if _user_progressed(pending):
+        log.log("helper_superseded", session_id=session_id, source="before_resume")
+        state.clear_pending(session_id, "superseded")
+        state.clear_launching(session_id)
+        return True
 
+    attempts_before = int(pending.get("attempts") or 0)
     state.mark_launching(session_id, {"resume_at": pending.get("resume_at")})
     pending["state"] = state.STATE_RESUMING
     pending["attempts"] = int(pending.get("attempts") or 0) + 1
@@ -636,7 +658,9 @@ def _do_resume(codex_bin: str, pending: dict, settings: dict, waiter: Waiter) ->
         cwd=pending.get("cwd"),
         model=runner.effective_model(pending.get("model")),
     )
-    outcome = runner.reconcile_with_transcript(outcome, transcript)
+    outcome = runner.reconcile_with_transcript(
+        outcome, transcript, not_before=outcome.get("started_at")
+    )
     state.clear_launching(session_id)
 
     pending = state.read_pending(session_id) or pending
@@ -646,6 +670,21 @@ def _do_resume(codex_bin: str, pending: dict, settings: dict, waiter: Waiter) ->
     pending["last_finished_at"] = outcome.get("finished_at")
 
     result = outcome.get("result")
+    if result == runner.RESULT_ATTACHED:
+        # Codex refused because a live client still owns the thread. This is
+        # not a resume attempt and must not consume the attempt budget; wait
+        # for the same bounded recheck used for a visibly attached session.
+        pending["attempts"] = attempts_before
+        pending["resume_at"] = time.time() + MIN_ATTACHED_RECHECK
+        state.write_pending(pending)
+        log.log(
+            "helper_session_still_attached",
+            session_id=session_id,
+            reason="active_writer",
+            diagnostic=outcome.get("diagnostic"),
+            resume_at=pending["resume_at"],
+        )
+        return True
     if result == runner.RESULT_COMPLETED:
         log.log("helper_completed", session_id=session_id)
         state.clear_pending(session_id, state.STATE_COMPLETED)
@@ -665,11 +704,24 @@ def _do_resume(codex_bin: str, pending: dict, settings: dict, waiter: Waiter) ->
             reset_at = outcome.get("reset_at")
             pending["reset_source"] = "transcript_message" if reset_at else "unknown"
         pending["reset_at"] = reset_at
-        pending["resume_at"] = runner.pending_resume_at(
-            reset_at,
-            int(pending.get("attempts") or 0),
-            margin=float(settings.get("reset_margin_seconds", state.RESET_MARGIN_SECONDS)),
-        )
+        attempts = int(pending.get("attempts") or 0)
+        if reset_at is None or float(reset_at) <= time.time():
+            # A resume just ran and still reported quota with no future reset.
+            # Retrying immediately would spin against the limit and hammer the
+            # CLI, so use the existing bounded backoff instead.
+            if attempts >= MAX_ATTEMPTS:
+                pending["state"] = state.STATE_FAILED
+                pending["last_result"] = "max_attempts"
+                state.write_pending(pending)
+                log.log("helper_giving_up", session_id=session_id, attempts=attempts)
+                return True
+            pending["resume_at"] = time.time() + state.next_resume_delay(attempts)
+        else:
+            pending["resume_at"] = runner.pending_resume_at(
+                reset_at,
+                attempts,
+                margin=float(settings.get("reset_margin_seconds", state.RESET_MARGIN_SECONDS)),
+            )
         state.write_pending(pending)
         log.log(
             "helper_requeued",
@@ -941,7 +993,12 @@ def main(codex_bin: Optional[str] = None) -> int:
             waiter.install()
             shutdown.install()
             write_pid()
-            log.log("helper_started", pid=os.getpid(), codex_bin=codex_bin)
+            log.log(
+                "helper_started",
+                pid=os.getpid(),
+                codex_bin=codex_bin,
+                version=__version__,
+            )
             while iterations < MAX_ITERATIONS:
                 iterations += 1
                 if shutdown.requested:

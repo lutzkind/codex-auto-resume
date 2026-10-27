@@ -85,6 +85,17 @@ def task_complete(
     return {"timestamp": stamp, "type": "event_msg", "payload": payload}
 
 
+def task_started(*, at: float | None = None, turn_id: str = "turn-1") -> dict:
+    stamp = time.strftime(
+        "%Y-%m-%dT%H:%M:%S", time.gmtime(at if at is not None else time.time())
+    ) + "Z"
+    return {
+        "timestamp": stamp,
+        "type": "event_msg",
+        "payload": {"type": "task_started", "turn_id": turn_id},
+    }
+
+
 QUOTA_MESSAGE = (
     "You\u2019ve hit your usage limit. Upgrade to Pro "
     "(https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage "

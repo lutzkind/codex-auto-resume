@@ -4,6 +4,48 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-10-27
+
+Patch release for a missed auto-resume observed in production.
+
+### Fixed
+
+- **Clock-only reset times are anchored to the interruption.** `try again at
+  8:00 AM` is now resolved against the timestamp of the failed turn, not the
+  later time the transcript happens to be read. A helper that re-reads the
+  transcript after the reset therefore keeps the same-day reset instead of
+  silently rolling it forward 24 hours (the production failure on
+  2026-10-27: interrupted at 06:17, first re-read at 08:01, next attempt
+  scheduled for the following morning).
+- **A live TUI is recognised through Codex's own refusal.** Resuming a thread
+  that a TUI still owns returns `thread-store conflict: ... already has an
+  active writer`; that is now classified as "still attached", keeps the
+  pending recovery, and rechecks after the normal attached-session interval.
+  It is no longer mistaken for a quota result or a hard failure, and the CLI's
+  error text is kept in `last_message` and the log.
+- **No tight retry loop after repeated quota exhaustion.** A resume that still
+  reports quota with an already-passed reset uses the bounded retry policy and
+  honours `MAX_ATTEMPTS` instead of retrying immediately.
+- **Failed launches are no longer masked by an unchanged transcript.** A
+  plain-text CLI failure (for example an active writer or a stream error) is
+  reported as such; the transcript is only used to reconcile a resume when a
+  new turn was actually written. Captured diagnostics are redacted for the
+  continuation prompt so logs still never contain prompts.
+- **Manual continuation supersedes a stale recovery before the wait.** If the
+  user continues the session themselves, the old pending record is cleared as
+  superseded even while the session is still attached, instead of waiting for
+  a next-day reset and then re-evaluating it.
+- **A running turn is no longer mistaken for its older quota error.** The
+  newest transcript lifecycle event is now considered, including
+  `task_started`; a session that is mid-turn is not armed by the detection
+  sweep, and a helper crash during its own resume is not replayed.
+
+Regression coverage includes the production clock-only timing (interruption
+before the reset, transcript first read after it), no next-day rollover, the
+captured active-writer diagnostic, repeated quota exhaustion, unchanged
+transcripts, and the existing exact-session, cancellation, disable, restart,
+hook-idempotency and macOS/Windows suites.
+
 ## [0.2.0] - 2026-10-16
 
 Cross-platform release: macOS and native Windows join Linux, WSL stays on the
