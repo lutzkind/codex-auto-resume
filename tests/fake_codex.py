@@ -135,6 +135,28 @@ def handle_exec_resume(argv: list[str]) -> int:
         write_transcript(session_id or "unknown", transcript, cwd)
 
     outcome = cfg.get("resume_outcome", "completed")
+    if outcome == "attached":
+        # Captured from codex-cli 0.164.0: a live TUI still owns the thread, so
+        # the CLI refuses before any turn starts and writes only plain text.
+        print(
+            "2026-10-27T08:00:31Z ERROR codex_core::session::session: "
+            "failed to initialize thread persistence: thread-store conflict: "
+            f"thread {session_id} already has an active writer",
+            file=sys.stderr,
+        )
+        print(
+            "Error: thread/resume: thread/resume failed: "
+            f"thread {session_id} already has an active writer (code -32600)",
+            file=sys.stderr,
+        )
+        return 1
+    if outcome == "fatal":
+        print(
+            cfg.get("error_message", "stream disconnected before any turn event"),
+            file=sys.stderr,
+        )
+        return 1
+
     print(json.dumps({"type": "thread.started", "thread_id": session_id}))
     print(json.dumps({"type": "turn.started"}))
 

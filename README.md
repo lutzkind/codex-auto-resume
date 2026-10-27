@@ -284,8 +284,8 @@ kickstart …`, or `schtasks /run /tn …`).
 | macOS: `launchctl bootstrap failed: 5` | The plist is kept for inspection at `~/Library/LaunchAgents/com.lutzkind.codex-auto-resume.helper.plist`. Re-run `codex-auto-resume install-service`, which boots the old job out first; check `launchctl print gui/$UID/com.lutzkind.codex-auto-resume.helper` for the launchd error. |
 | Windows: `schtasks /create failed` | The task definition is kept at `%LOCALAPPDATA%\codex-auto-resume\service\codex-auto-resume-helper.xml`. `schtasks /query /tn codex-auto-resume-helper /v /fo LIST` shows the Task Scheduler error; per-user tasks need no administrator rights, but a locked-down policy can still block their creation. |
 | Windows: hooks do nothing | The hook runs `bin\codex-auto-resume.cmd`, which needs Python 3.9+ on `PATH` (`python.exe`, `py.exe` or `python3.exe`). Verify with `python --version`, then re-trust the hooks. |
-| A continuation never happens although the reset passed | Check `codex-auto-resume status`: `session_attached: yes` means Codex still looks like it is using that session (it is only resumed when detached). `not_resumable` means Codex reported a limit that waiting cannot fix (credits, spend cap). |
-| Resume fails immediately | `codex-auto-resume logs -n 50` says why. A non-interactive approval policy is required for unattended work (see `doctor`). |
+| A continuation never happens although the reset passed | Check `codex-auto-resume status`: `session_attached: yes` means Codex still looks like it is using that session (it is only resumed when detached). `last_result: attached` with `already has an active writer` means a live client still owns the thread; close it and the helper will retry. `not_resumable` means Codex reported a limit that waiting cannot fix (credits, spend cap). |
+| Resume fails immediately | `codex-auto-resume logs -n 50` says why; `last_message` and the `resume_finished` record now include Codex's own plain-text error. A non-interactive approval policy is required for unattended work (see `doctor`). |
 
 Every state change is logged with ids, timestamps, and statuses. Logs never
 contain prompts, transcripts, tokens, or credentials.
@@ -300,8 +300,9 @@ Two independent, structured signals, in this order:
    `usage_limit_exceeded`. That structured value — not terminal text — is the
    detector. Ordinary failures (`response_stream_disconnected`,
    `unauthorized`, `context_window_exceeded`, `sandbox_error`, …), user
-   cancellation (`turn_aborted`), and normal completions are explicitly *not*
-   treated as quota interruptions, so they are never auto-resumed.
+   cancellation (`turn_aborted`), normal completions, and a still-running turn
+   (`task_started` as the newest lifecycle event) are explicitly *not* treated
+   as quota interruptions, so they are never auto-resumed.
 2. **The reset time.**
    - The helper asks Codex for the authoritative snapshot through
      `account/rateLimits/read`. The response contains
@@ -315,7 +316,9 @@ Two independent, structured signals, in this order:
      Codex printed: `... or try again at 7:51 AM.` (parsed in the host's local
      timezone, which is the timezone Codex formatted it in), or the fully
      dated form `... or try again at Nov 3rd, 2026 4:07 PM.`, or an ISO-8601
-     timestamp with an offset.
+     timestamp with an offset. A clock-only time is anchored to the moment the
+     failed turn was written, not to when the helper reads the transcript, so
+     a read after the reset still yields the same-day reset (0.2.1).
    - If neither is available, the helper backs off exponentially instead of
      hammering Codex.
 
@@ -368,9 +371,12 @@ Additional guards:
   have the session open in a TUI, nothing is resumed behind your back, because
   two live hosts for one session is worse than waiting. A session found by the
   detection sweep that never registered a host process counts as detached only
-  once Codex has stopped writing its transcript for 90 seconds. Set
-  `resume_when_attached` to `true` in the state `config.json` if you
-  deliberately want the other behaviour.
+  once Codex has stopped writing its transcript for 90 seconds. If the
+  transcript looks idle but a live client still owns the thread, Codex refuses
+  the resume with `thread-store conflict: ... already has an active writer`;
+  the helper records `attached`, keeps the recovery, and rechecks later
+  (0.2.1). Set `resume_when_attached` to `true` in the state `config.json` if
+  you deliberately want the other behaviour.
 - If you come back and make progress in the session yourself, the helper sees a
   newer successful turn in the transcript and discards the pending recovery
   instead of resuming.
@@ -583,7 +589,7 @@ only to tell "the shared daemon" apart from "a session host". See
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -t tests -v   # 317 tests, no dependencies
+python3 -m unittest discover -s tests -t tests -v   # 334 tests, no dependencies
 python3 -m compileall src bin/codex-auto-resume
 scripts/check.sh                                    # tests + hygiene checks
 

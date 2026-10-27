@@ -8,7 +8,7 @@ import time
 import unittest
 from datetime import datetime
 
-from support import QUOTA_MESSAGE, StateCase, task_complete
+from support import QUOTA_MESSAGE, StateCase, task_complete, task_started
 from codex_auto_resume import quota
 
 
@@ -125,6 +125,47 @@ class LastTurnOutcomeTests(StateCase):
         path = self.write_transcript("s7", [task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=at)])
         outcome = quota.last_turn_outcome(str(path), now=at + 20 * 60)
         self.assertEqual(outcome["reset_at"], datetime(2026, 10, 15, 7, 51).timestamp())
+
+    def test_clock_reset_read_past_the_reset_does_not_roll_over(self) -> None:
+        # Live failure 2026-10-27: interrupted at 06:17 with "try again at
+        # 8:00 AM"; the transcript was first re-read at 08:01, after the reset,
+        # and the old parser anchored 8:00 AM to 08:01 and selected the next
+        # day. The reset was legitimate and already due.
+        message = (
+            "You\u2019ve hit your usage limit. Upgrade to Pro "
+            "(https://chatgpt.com/explore/pro), visit "
+            "https://chatgpt.com/settings/usage to purchase more credits or "
+            "try again at 8:00 AM."
+        )
+        at = datetime(2026, 10, 27, 6, 17).timestamp()
+        path = self.write_transcript(
+            "s8", [task_complete(message=message, error_info="usage_limit_exceeded", at=at)]
+        )
+        outcome = quota.last_turn_outcome(str(path), now=datetime(2026, 10, 27, 8, 1).timestamp())
+        self.assertEqual(outcome["reset_at"], datetime(2026, 10, 27, 8, 0).timestamp())
+
+    def test_clock_reset_before_the_interruption_is_tomorrow(self) -> None:
+        # "try again at 7:00 AM" written at 23:00 really is the next morning.
+        at = datetime(2026, 10, 15, 23, 0).timestamp()
+        message = QUOTA_MESSAGE.replace("7:51 AM", "7:00 AM")
+        path = self.write_transcript("s9", [task_complete(message=message, error_info="usage_limit_exceeded", at=at)])
+        outcome = quota.last_turn_outcome(str(path), now=at + 5 * 60)
+        self.assertEqual(outcome["reset_at"], datetime(2026, 10, 16, 7, 0).timestamp())
+
+    def test_a_running_turn_supersedes_an_older_quota_error(self) -> None:
+        # The user continued the session manually; the newest lifecycle event
+        # is the running turn, so the sweep must not arm the old interruption.
+        path = self.write_transcript(
+            "s10",
+            [
+                task_complete(message=QUOTA_MESSAGE, error_info="usage_limit_exceeded", at=time.time() - 600),
+                task_started(at=time.time() - 60, turn_id="manual-turn"),
+            ],
+        )
+        outcome = quota.last_turn_outcome(str(path))
+        self.assertEqual(outcome["outcome"], quota.OUTCOME_IN_PROGRESS)
+        self.assertFalse(outcome["resumable"])
+        self.assertEqual(outcome["turn_id"], "manual-turn")
 
     def test_normal_completion_is_not_resumable(self) -> None:
         path = self.write_transcript("s2", [task_complete()])

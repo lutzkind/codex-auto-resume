@@ -38,7 +38,7 @@ Guidance for coding agents working in this repository.
 ## Commands
 
 ```bash
-python3 -m unittest discover -s tests -t tests -v   # all tests (317)
+python3 -m unittest discover -s tests -t tests -v   # all tests (334)
 python3 -m unittest discover -s tests -v            # same suite, CI-standard form
 python3 -m compileall -q src bin/codex-auto-resume
 python3 scripts/check-manifests.py                  # plugin packaging

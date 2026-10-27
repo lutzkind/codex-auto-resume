@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from typing import Any, Optional
@@ -18,8 +19,30 @@ from . import codexenv, log, quota, state, sysinfo
 
 RESULT_COMPLETED = "completed"
 RESULT_QUOTA = "quota"
+RESULT_ATTACHED = "attached"
 RESULT_ERROR = "error"
 RESULT_START_FAILED = "start_failed"
+
+#: Codex refuses to resume a thread that a live TUI (or another client) still
+#: has loaded. This is not a failure to retry immediately: the session is still
+#: attached, and waiting is the correct behaviour. Captured from the installed
+#: CLI on 2026-10-27 (0.164.0):
+#: ``thread-store conflict: thread <uuid> already has an active writer``.
+_ACTIVE_WRITER_RE = re.compile(r"already has an active writer", re.IGNORECASE)
+#: Codex colorises its error labels; the message itself must stay matchable.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+#: Bound what is kept from a failed CLI invocation. The diagnostic is a Codex
+#: error, never a prompt or transcript.
+_MAX_DIAGNOSTIC_CHARS = 2000
+
+
+def _redact(text: Optional[str], prompt: str) -> Optional[str]:
+    """Keep a CLI diagnostic from echoing the continuation prompt into logs."""
+    if not text:
+        return text
+    if prompt:
+        return text.replace(prompt, "<prompt>")
+    return text
 
 #: Flags that are safe for unattended operation and never escalate permissions.
 BASE_FLAGS = ("exec", "resume", "--json", "--skip-git-repo-check")
@@ -162,10 +185,11 @@ def run_resume(
     deadline = started + timeout if timeout else None
     classified: Optional[tuple[str, str]] = None
     tail: list[str] = []
+    diagnostics: list[str] = []
     assert proc.stdout is not None
     for line in proc.stdout:
         result["events"] += 1
-        line = line.rstrip("\n")
+        line = _ANSI_RE.sub("", line.rstrip("\n"))
         if not line:
             continue
         tail.append(line)
@@ -174,6 +198,11 @@ def run_resume(
         try:
             event = json.loads(line)
         except ValueError:
+            # The CLI writes startup/thread errors as plain text. Keep them:
+            # discarding them made a failed resume look like an empty result.
+            diagnostics.append(_redact(line, prompt) or line)
+            if len(diagnostics) > 20:
+                diagnostics.pop(0)
             continue
         if not isinstance(event, dict):
             continue
@@ -195,6 +224,7 @@ def run_resume(
 
     if classified is not None:
         result["result"], result["message"] = classified
+        result["message"] = _redact(result["message"], prompt)
     elif result["exit_code"] == 0:
         result["result"] = RESULT_COMPLETED
     for line in tail:
@@ -205,7 +235,16 @@ def run_resume(
         if isinstance(event, dict) and event.get("type") == "turn.failed":
             error = event.get("error")
             if isinstance(error, dict) and not result["message"]:
-                result["message"] = error.get("message")
+                result["message"] = _redact(error.get("message"), prompt)
+
+    diagnostic = " | ".join(diagnostics)[-_MAX_DIAGNOSTIC_CHARS:]
+    result["diagnostic"] = diagnostic or None
+    if result["result"] == RESULT_ERROR and diagnostic:
+        if _ACTIVE_WRITER_RE.search(diagnostic):
+            result["result"] = RESULT_ATTACHED
+        if not result["message"]:
+            # The last plain-text line is Codex's own error message.
+            result["message"] = diagnostics[-1]
     log.log(
         "resume_finished",
         session_id=session_id,
@@ -217,15 +256,31 @@ def run_resume(
     return result
 
 
-def reconcile_with_transcript(outcome: dict, transcript_path: Optional[str]) -> dict:
+def reconcile_with_transcript(
+    outcome: dict,
+    transcript_path: Optional[str],
+    not_before: Optional[float] = None,
+) -> dict:
     """Prefer the transcript's own record of how the resumed turn ended.
 
     This keeps the decision correct even when the plugin hooks are not trusted
     (so no hook ran during the resume) and when the process output is
-    truncated.
+    truncated. It must not, however, turn a failed launch into a quota result:
+    if Codex refused to resume the thread (for example because a live TUI still
+    owns it), the transcript still ends with the *original* interruption and
+    has not changed. ``not_before`` (the resume's start time) makes that
+    distinction.
     """
     if not transcript_path or not os.path.exists(transcript_path):
         return outcome
+    if outcome.get("result") in (RESULT_ATTACHED, RESULT_START_FAILED):
+        return outcome
+    if not_before is not None:
+        try:
+            if os.path.getmtime(transcript_path) <= float(not_before):
+                return outcome
+        except OSError:
+            return outcome
     recorded = quota.last_turn_outcome(transcript_path)
     if recorded["outcome"] == quota.OUTCOME_QUOTA:
         outcome = dict(outcome)
@@ -245,11 +300,17 @@ def pending_resume_at(
     attempts: int,
     now: Optional[float] = None,
     margin: float = state.RESET_MARGIN_SECONDS,
+    minimum_delay: float = 0.0,
 ) -> float:
-    """Compute when to try again, honouring an already-passed reset time."""
+    """Compute when to try again, honouring an already-passed reset time.
+
+    A passed reset is normally retried immediately (for example after a
+    reboot). After a resume that itself reported quota, however, an immediate
+    retry can only spin: ``minimum_delay`` gives that caller a bounded pause.
+    """
     now = now if now is not None else time.time()
     if reset_at is None:
         return now + state.next_resume_delay(attempts)
     if reset_at <= now:
-        return now
+        return now + max(0.0, float(minimum_delay))
     return reset_at + margin
